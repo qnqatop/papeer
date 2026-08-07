@@ -1,0 +1,75 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Install system deps (pdftotext + GTK/WebKit for Wails build)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Stub embedded frontend assets
+        run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -race -count=1 -timeout 5m
+
+  frontend:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Install Wails CLI
+        working-directory: .
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Stub embedded frontend assets
+        working-directory: .
+        run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
+
+      - name: Generate Wails bindings
+        working-directory: .
+        run: wails generate module
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Type check + build
+        run: npm run build
+
+      - name: Vitest
+        run: npm test

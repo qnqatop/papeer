@@ -1,0 +1,144 @@
+/*
+ * Design Tokens — Papeer UI
+ * Based on "Design for Developers" principles.
+ *
+ * Color weights: 50-900 (light → dark)
+ * Dark mode: lighter weights for text, darker for backgrounds
+ */
+
+:root {
+  /* ── Primary (Violet) ── brand, actions, focus */
+  --color-primary-50:  #f3f0ff;
+  --color-primary-100: #e9e3ff;
+  --color-primary-200: #d4c9ff;
+  --color-primary-300: #b7a4ff;
+  --color-primary-400: #9880ff;
+  --color-primary-500: #7c5cff;
+  --color-primary-600: #6a44f0;
+  --color-primary-700: #5836d1;
+  --color-primary-800: #472ba8;
+  --color-primary-900: #2e2170;
+
+  /* ── Secondary (Amber) ── attention, warmth, call-to-action */
+  --color-secondary-50:  #fffbeb;
+  --color-secondary-100: #fef3c7;
+  --color-secondary-200: #fde68a;
+  --color-secondary-300: #fcd34d;
+  --color-secondary-400: #fbbf24;
+  --color-secondary-500: #f59e0b;
+  --color-secondary-600: #d97706;
+  --color-secondary-700: #b45309;
+  --color-secondary-800: #92400e;
+  --color-secondary-900: #78350f;
+
+  /* ── Accent (Teal) ── highlights, secondary brand */
+  --color-accent-50:  #e9faf5;
+  --color-accent-100: #ccf5ea;
+  --color-accent-200: #a2ecda;
+  --color-accent-300: #6fe3c9;
+  --color-accent-400: #46e0c0;
+  --color-accent-500: #22c9a6;
+  --color-accent-600: #14a888;
+  --color-accent-700: #10836b;
+  --color-accent-800: #0e6656;
+  --color-accent-900: #0c5347;
+
+  /* ── Semantic ── */
+  --color-success-400: #4ade80;
+  --color-success-500: #22c55e;
+  --color-success-600: #16a34a;
+
+  --color-warning-400: #fbbf24;
+  --color-warning-500: #f59e0b;
+  --color-warning-600: #d97706;
+
+  --color-error-400: #f87171;
+  --color-error-500: #ef4444;
+  --color-error-600: #dc2626;
+
+  --color-info-400: #9880ff;
+  --color-info-500: #7c5cff;
+  --color-info-600: #6a44f0;
+
+  /* ── Neutral (Slate) ── */
+  --color-neutral-50:  #f8fafc;
+  --color-neutral-100: #f1f5f9;
+  --color-neutral-200: #e2e8f0;
+  --color-neutral-300: #cbd5e1;
+  --color-neutral-400: #94a3b8;
+  --color-neutral-500: #64748b;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1e293b;
+  --color-neutral-900: #0f172a;
+  --color-neutral-950: #020617;
+
+  /* ── Dark theme surfaces ── */
+  --surface-bg:       var(--color-neutral-900);
+  --surface-card:     var(--color-neutral-800);
+  --surface-elevated: #253347;
+  --surface-overlay:  rgba(0, 0, 0, 0.6);
+  --surface-border:   rgba(148, 163, 184, 0.12);
+  --surface-divider:  rgba(148, 163, 184, 0.08);
+
+  /* ── Text ── */
+  --text-primary:     var(--color-neutral-50);
+  --text-secondary:   var(--color-neutral-300);
+  --text-tertiary:    var(--color-neutral-400);
+  --text-disabled:    var(--color-neutral-600);
+  --text-link:        var(--color-primary-400);
+
+  /* ── Typography ── */
+  --font-family:     'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:       'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+
+  --text-h1:         28px;
+  --text-h2:         22px;
+  --text-h3:         18px;
+  --text-body:       15px;
+  --text-sm:         13px;
+  --text-caption:    11px;
+
+  --leading-tight:   1.25;
+  --leading-snug:    1.35;
+  --leading-normal:  1.6;
+  --leading-relaxed: 1.7;
+
+  --weight-light:    300;
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* ── Spacing ── base 4px */
+  --space-0:   0px;
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:   12px;
+  --space-4:   16px;
+  --space-5:   20px;
+  --space-6:   24px;
+  --space-8:   32px;
+  --space-10:  40px;
+  --space-12:  48px;
+  --space-16:  64px;
+
+  /* ── Border Radius ── */
+  --radius-xs:  2px;
+  --radius-sm:  4px;
+  --radius-md:  8px;
+  --radius-lg:  12px;
+  --radius-xl:  16px;
+  --radius-full: 9999px;
+
+  /* ── Shadows (dark mode optimized) ── */
+  --shadow-sm:  0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md:  0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-lg:  0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-xl:  0 8px 32px rgba(0, 0, 0, 0.5);
+
+  /* ── Transitions ── */
+  --transition-fast:   150ms ease;
+  --transition-normal: 250ms ease;
+  --transition-slow:   350ms ease;
+}

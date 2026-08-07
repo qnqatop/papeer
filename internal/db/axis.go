@@ -1,0 +1,195 @@
+package db
+
+import (
+	"database/sql"
+	"fmt"
+)
+
+func (d *DB) ListAxes(profileID int64) ([]Axis, error) {
+	rows, err := d.Query(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position FROM axes WHERE profile_id=? ORDER BY position, id`, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Axis
+	for rows.Next() {
+		var a Axis
+		if err := rows.Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Load queries and keywords for each axis.
+	for i := range out {
+		out[i].Queries, err = d.listQueries(out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Keywords, err = d.listKeywords(out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) GetAxis(id int64) (*Axis, error) {
+	var a Axis
+	err := d.QueryRow(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position FROM axes WHERE id=?`, id).
+		Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position)
+	if err != nil {
+		return nil, err
+	}
+	a.Queries, err = d.listQueries(a.ID)
+	if err != nil {
+		return nil, err
+	}
+	a.Keywords, err = d.listKeywords(a.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+// SaveAxis creates or updates an axis with its queries and keywords.
+// If a.ID == 0, a new axis is created. Otherwise, it updates the existing one.
+// Queries and keywords are replaced entirely (delete + re-insert).
+func (d *DB) SaveAxis(a *Axis) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if a.ID == 0 {
+		// Insert new axis.
+		res, err := tx.Exec(`INSERT INTO axes (profile_id, axis_key, description, year_min, max_per_query, position) VALUES (?,?,?,?,?,?)`,
+			a.ProfileID, a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position)
+		if err != nil {
+			return fmt.Errorf("insert axis: %w", err)
+		}
+		a.ID, _ = res.LastInsertId()
+	} else {
+		// Update existing axis.
+		_, err := tx.Exec(`UPDATE axes SET axis_key=?, description=?, year_min=?, max_per_query=?, position=? WHERE id=?`,
+			a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position, a.ID)
+		if err != nil {
+			return fmt.Errorf("update axis: %w", err)
+		}
+	}
+
+	// Replace queries.
+	if _, err := tx.Exec(`DELETE FROM queries WHERE axis_id=?`, a.ID); err != nil {
+		return err
+	}
+	for i, q := range a.Queries {
+		res, err := tx.Exec(`INSERT INTO queries (axis_id, text, position) VALUES (?,?,?)`, a.ID, q.Text, i)
+		if err != nil {
+			return err
+		}
+		id, _ := res.LastInsertId()
+		a.Queries[i].ID = id
+		a.Queries[i].AxisID = a.ID
+		a.Queries[i].Position = i
+	}
+
+	// Replace keywords.
+	if _, err := tx.Exec(`DELETE FROM keywords WHERE axis_id=?`, a.ID); err != nil {
+		return err
+	}
+	for i, k := range a.Keywords {
+		res, err := tx.Exec(`INSERT INTO keywords (axis_id, word, type) VALUES (?,?,?)`, a.ID, k.Word, k.Type)
+		if err != nil {
+			return err
+		}
+		id, _ := res.LastInsertId()
+		a.Keywords[i].ID = id
+		a.Keywords[i].AxisID = a.ID
+	}
+
+	return tx.Commit()
+}
+
+func (d *DB) DeleteAxis(id int64) error {
+	_, err := d.Exec(`DELETE FROM axes WHERE id=?`, id)
+	return err
+}
+
+// ReorderAxes updates the position field for axes in the given order.
+func (d *DB) ReorderAxes(profileID int64, axisIDs []int64) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for pos, id := range axisIDs {
+		if _, err := tx.Exec(`UPDATE axes SET position=? WHERE id=? AND profile_id=?`, pos, id, profileID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (d *DB) listQueries(axisID int64) ([]Query, error) {
+	rows, err := d.Query(`SELECT id, axis_id, text, position FROM queries WHERE axis_id=? ORDER BY position`, axisID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Query
+	for rows.Next() {
+		var q Query
+		if err := rows.Scan(&q.ID, &q.AxisID, &q.Text, &q.Position); err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) listKeywords(axisID int64) ([]Keyword, error) {
+	rows, err := d.Query(`SELECT id, axis_id, word, type FROM keywords WHERE axis_id=? ORDER BY id`, axisID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Keyword
+	for rows.Next() {
+		var k Keyword
+		if err := rows.Scan(&k.ID, &k.AxisID, &k.Word, &k.Type); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// CountPapersByAxis returns paper count for a given axis. Used by stats.
+func (d *DB) CountPapersByAxis(profileID int64) (map[int64]int, error) {
+	rows, err := d.Query(`SELECT axis_id, COUNT(*) FROM papers WHERE profile_id=? AND axis_id IS NOT NULL GROUP BY axis_id`, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int64]int)
+	for rows.Next() {
+		var axisID sql.NullInt64
+		var count int
+		if err := rows.Scan(&axisID, &count); err != nil {
+			return nil, err
+		}
+		if axisID.Valid {
+			out[axisID.Int64] = count
+		}
+	}
+	return out, rows.Err()
+}

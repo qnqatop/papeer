@@ -1,0 +1,17 @@
+build/bin
+node_modules
+frontend/dist
+frontend/wailsjs
+*.db
+*.db-wal
+*.db-shm
+.idea
+.DS_Store
+papeer
+apepa
+docs/plan.md
+docs/features/
+docs/DESIGN.md
+.claude
+.deepseek
+opencode.json

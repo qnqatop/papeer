@@ -1,0 +1,36 @@
+FROM golang:1.26-bookworm
+
+# Build-time version stamp, injected into the binary via ldflags so the Linux
+# build shows the real version in the UI footer instead of "dev".
+# Override with: docker build --build-arg VERSION=v1.2.3 ...
+ARG VERSION=dev
+
+# System deps for Wails + Linux WebView.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    libgtk-3-dev \
+    libwebkit2gtk-4.0-dev \
+    pkg-config \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 22.x from NodeSource (Debian's apt "npm" pulls an old Node).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Wails CLI.
+RUN go install github.com/wailsapp/wails/v2/cmd/wails@latest
+ENV PATH="/root/go/bin:${PATH}"
+
+WORKDIR /src
+COPY . .
+
+# Build for Linux with the version stamp.
+RUN cd frontend && npm install && cd .. && \
+    wails build -platform linux/amd64 -clean \
+    -ldflags "-X github.com/qnqatop/papeer/internal/app.Version=${VERSION}"
+
+# Output will be at /src/build/bin/papeer

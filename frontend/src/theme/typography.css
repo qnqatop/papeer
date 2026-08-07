@@ -1,0 +1,89 @@
+/*
+ * Typography utility classes — Papeer UI
+ *
+ * Usage: <span class="text-h1">Title</span>
+ *        <p class="text-body">Paragraph</p>
+ */
+
+/* ── Headings ── */
+.text-h1 {
+  font-size: var(--text-h1);
+  line-height: var(--leading-tight);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.text-h2 {
+  font-size: var(--text-h2);
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.text-h3 {
+  font-size: var(--text-h3);
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+/* ── Body text ── */
+.text-body {
+  font-size: var(--text-body);
+  line-height: var(--leading-normal);
+  font-weight: var(--weight-regular);
+  color: var(--text-primary);
+}
+
+.text-sm {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-regular);
+  color: var(--text-secondary);
+}
+
+.text-caption {
+  font-size: var(--text-caption);
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-medium);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Modifiers ── */
+.text-muted {
+  color: var(--text-tertiary);
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+.text-primary-color {
+  color: var(--color-primary-400);
+}
+
+.text-semibold {
+  font-weight: var(--weight-semibold);
+}
+
+.text-medium {
+  font-weight: var(--weight-medium);
+}
+
+.text-mono {
+  font-family: var(--font-mono);
+}
+
+/* ── Label (above inputs, sections) ── */
+.text-label {
+  font-size: 12px;
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-medium);
+  color: var(--text-tertiary);
+  display: block;
+  margin-bottom: var(--space-1);
+}

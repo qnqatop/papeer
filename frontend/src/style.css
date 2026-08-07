@@ -1,0 +1,65 @@
+@import 'driver.js/dist/driver.css';
+@import './assets/onboarding.css';
+@import './theme/typography.css';
+
+html, body, #app {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ── Smooth text rendering ── */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── Selection color ── */
+::selection {
+  background: rgba(124, 92, 255, 0.3);
+  color: inherit;
+}
+
+/* ── Sidebar active menu item indicator ── */
+.n-menu .n-menu-item-content--selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--color-primary-500, #7c5cff);
+}
+
+/* ── Card hover effect ── */
+.n-card {
+  transition: box-shadow var(--transition-fast, 150ms ease);
+}
+
+/* ── Focus-visible ring for inputs ── */
+.n-input--focus {
+  box-shadow: 0 0 0 2px rgba(124, 92, 255, 0.2) !important;
+}
+
+/* ── Scrollbar styling (WebKit) ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.35);
+}

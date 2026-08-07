@@ -1,0 +1,83 @@
+axes:
+  pt_c_catalysts:
+    description: "Платино-углеродные катализаторы для топливных элементов с протонообменной мембраной (PEMFC)"
+    year_min: 2015
+    max_per_query: 30
+    queries:
+      - "platinum carbon catalyst proton exchange membrane fuel cell"
+      - "Pt/C electrocatalyst PEMFC durability"
+      - "platinum nanoparticles carbon support oxygen reduction reaction"
+      - "Pt/C catalyst degradation fuel cell"
+      - "platinum carbon composite electrocatalyst ORR activity"
+    keywords_must:
+      - "platinum"
+      - "catalyst"
+      - "fuel cell"
+    keywords_boost:
+      - "carbon support"
+      - "oxygen reduction"
+      - "PEMFC"
+      - "electrocatalyst"
+      - "durability"
+      - "nanoparticles"
+
+  carbon_supports:
+    description: "Углеродные носители для платиновых катализаторов — типы, модификация, влияние на активность"
+    year_min: 2015
+    max_per_query: 30
+    queries:
+      - "carbon support platinum catalyst fuel cell performance"
+      - "graphene carbon nanotube platinum electrocatalyst support"
+      - "mesoporous carbon Pt catalyst oxygen reduction"
+      - "nitrogen doped carbon platinum catalyst ORR"
+      - "carbon black Vulcan XC-72 platinum catalyst"
+    keywords_must:
+      - "carbon"
+      - "platinum"
+    keywords_boost:
+      - "support"
+      - "graphene"
+      - "carbon nanotube"
+      - "mesoporous"
+      - "nitrogen doped"
+      - "Vulcan"
+
+  degradation_stability:
+    description: "Деградация и стабильность Pt/C катализаторов — механизмы старения, потеря активности"
+    year_min: 2018
+    max_per_query: 25
+    queries:
+      - "Pt/C catalyst degradation mechanism fuel cell"
+      - "platinum dissolution Ostwald ripening carbon corrosion"
+      - "accelerated stress test platinum catalyst durability"
+      - "platinum catalyst stability proton exchange membrane"
+    keywords_must:
+      - "degradation"
+      - "platinum"
+    keywords_boost:
+      - "stability"
+      - "durability"
+      - "Ostwald ripening"
+      - "carbon corrosion"
+      - "dissolution"
+      - "accelerated stress test"
+
+  synthesis_methods:
+    description: "Методы синтеза Pt/C катализаторов — полиол, импрегнация, электроосаждение"
+    year_min: 2015
+    max_per_query: 25
+    queries:
+      - "synthesis platinum carbon catalyst polyol method"
+      - "Pt nanoparticle deposition carbon support impregnation"
+      - "electrodeposition platinum catalyst fuel cell"
+      - "atomic layer deposition platinum electrocatalyst"
+    keywords_must:
+      - "synthesis"
+      - "platinum"
+    keywords_boost:
+      - "polyol"
+      - "impregnation"
+      - "electrodeposition"
+      - "atomic layer deposition"
+      - "sputtering"
+      - "nanoparticle"

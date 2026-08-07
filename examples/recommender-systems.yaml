@@ -1,0 +1,119 @@
+axes:
+  collaborative_filtering:
+    description: "Коллаборативная фильтрация и матричная факторизация — базовые методы рекомендаций по неявной и явной обратной связи"
+    year_min: 2015
+    max_per_query: 30
+    queries:
+      - "collaborative filtering recommender system"
+      - "matrix factorization implicit feedback recommendation"
+      - "neighborhood based collaborative filtering user item"
+      - "alternating least squares recommendation implicit"
+      - "SVD++ matrix factorization rating prediction"
+    keywords_must:
+      - "collaborative filtering"
+      - "recommendation"
+    keywords_boost:
+      - "matrix factorization"
+      - "implicit feedback"
+      - "SVD"
+      - "user-item"
+      - "rating prediction"
+
+  deep_learning_recsys:
+    description: "Глубокое обучение в рекомендательных системах — нейросетевые и графовые модели"
+    year_min: 2017
+    max_per_query: 30
+    queries:
+      - "deep learning recommender system survey"
+      - "neural collaborative filtering"
+      - "graph neural network recommendation"
+      - "transformer recommendation model"
+      - "autoencoder collaborative filtering recommendation"
+    keywords_must:
+      - "recommendation"
+    keywords_boost:
+      - "neural collaborative filtering"
+      - "graph neural network"
+      - "transformer"
+      - "embedding"
+      - "autoencoder"
+      - "deep learning"
+
+  sequential_session:
+    description: "Последовательные и сессионные рекомендации — предсказание следующего действия пользователя"
+    year_min: 2018
+    max_per_query: 25
+    queries:
+      - "session-based recommendation recurrent neural network"
+      - "sequential recommendation self-attention"
+      - "next item prediction recommendation model"
+      - "GRU4Rec session based recommendation"
+      - "BERT4Rec sequential recommendation transformer"
+    keywords_must:
+      - "recommendation"
+    keywords_boost:
+      - "sequential"
+      - "session-based"
+      - "next-item"
+      - "self-attention"
+      - "recurrent neural network"
+
+  cold_start:
+    description: "Проблема холодного старта — рекомендации для новых пользователей и объектов без истории"
+    year_min: 2016
+    max_per_query: 25
+    queries:
+      - "cold start problem recommender system"
+      - "cold start recommendation content features"
+      - "meta-learning cold start recommendation"
+      - "new user new item recommendation"
+      - "cross-domain recommendation cold start"
+    keywords_must:
+      - "cold start"
+      - "recommendation"
+    keywords_boost:
+      - "new user"
+      - "new item"
+      - "content-based"
+      - "meta-learning"
+      - "cross-domain"
+
+  evaluation_fairness:
+    description: "Оценка качества рекомендаций — метрики, разнообразие, новизна и справедливость"
+    year_min: 2017
+    max_per_query: 25
+    queries:
+      - "recommender system evaluation offline metrics"
+      - "diversity novelty recommendation beyond accuracy"
+      - "fairness in recommender systems"
+      - "ranking metrics NDCG recommendation evaluation"
+      - "bias and debiasing recommender systems"
+    keywords_must:
+      - "recommendation"
+      - "evaluation"
+    keywords_boost:
+      - "diversity"
+      - "novelty"
+      - "fairness"
+      - "NDCG"
+      - "bias"
+
+  educational_recsys:
+    description: "Рекомендательные системы в образовании — выбор вуза, специальности и учебных курсов"
+    year_min: 2016
+    max_per_query: 25
+    queries:
+      - "educational recommender system course recommendation"
+      - "university major recommendation students"
+      - "learning path recommendation e-learning"
+      - "MOOC course recommendation personalized"
+      - "career and program recommendation applicants"
+    keywords_must:
+      - "recommendation"
+    keywords_boost:
+      - "education"
+      - "course"
+      - "university"
+      - "students"
+      - "e-learning"
+      - "personalized"

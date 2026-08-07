@@ -1,0 +1,102 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin/universal
+            artifact: papeer-macos-universal
+          - os: windows-latest
+            platform: windows/amd64
+            artifact: papeer-windows-amd64
+          - os: ubuntu-22.04
+            platform: linux/amd64
+            artifact: papeer-linux-amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Linux system deps
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build
+        shell: bash
+        run: |
+          wails build -platform ${{ matrix.platform }} -clean \
+            -ldflags "-X github.com/qnqatop/papeer/internal/app.Version=${{ github.ref_name }}"
+
+      - name: Package (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          cd build/bin
+          ditto -c -k --keepParent Papeer.app "../../${{ matrix.artifact }}.zip"
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Portable ZIP with the bare .exe (no NSIS dependency on the runner).
+          Compress-Archive -Path build/bin/papeer.exe -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Package (Linux)
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          cd build/bin
+          tar -czf "../../${{ matrix.artifact }}.tar.gz" papeer
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.zip
+            ${{ matrix.artifact }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
