@@ -127,3 +127,29 @@ func (d *DB) TopFailReasons(profileID int64, limit int) ([]struct {
 	}
 	return out, rows.Err()
 }
+
+// GetFailedDownloadPaperIDs returns the set of paper IDs within a profile that
+// have at least one failed download attempt and NO successful download (no
+// filename on disk). Used by the frontend to show a “download failed” badge.
+func (d *DB) GetFailedDownloadPaperIDs(profileID int64) (map[int64]bool, error) {
+	rows, err := d.Query(`
+		SELECT p.id FROM papers p
+		WHERE p.profile_id = ?
+		  AND EXISTS (SELECT 1 FROM downloads d WHERE d.paper_id = p.id AND d.status = 'fail')
+		  AND NOT EXISTS (SELECT 1 FROM downloads d WHERE d.paper_id = p.id AND d.status = 'ok' AND d.filename IS NOT NULL)
+	`, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}

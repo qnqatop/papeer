@@ -113,6 +113,7 @@
           <PaperDetailPanel
             :paper="selectedPaper"
             :tags="allTags"
+            :status-filter="statusFilter ?? ''"
             @set-status="setStatus"
             @set-score="setScore"
             @save-notes="saveNotes"
@@ -127,14 +128,11 @@
         <n-space align="center" justify="space-between">
           <n-text style="font-size: 13px">{{ t('v2.papers.downloadBanner', { count: approvedNoPdfCount }) }}</n-text>
           <n-space :size="8">
-            <n-button size="small" type="primary" @click="showDownloadModal = true">{{ t('v2.papers.downloadPdf') }}</n-button>
+            <n-button size="small" type="primary" @click="downloadAllApproved">{{ t('v2.papers.downloadAllApproved', { count: approvedNoPdfCount }) }}</n-button>
             <n-button size="small" quaternary @click="downloadBannerDismissed = true">✕</n-button>
           </n-space>
         </n-space>
       </div>
-
-      <!-- Download modal -->
-      <DownloadModal v-model:show="showDownloadModal" />
     </template>
 
   </n-card>
@@ -153,14 +151,14 @@ import {
   useMessage,
 } from 'naive-ui'
 import PaperDetailPanel from '../components/PaperDetailPanel.vue'
-import DownloadModal from '../components/DownloadModal.vue'
 import { useProfileStore } from '../stores/profile'
 import { usePapersStore } from '../stores/papers'
 import { useSummaryStore } from '../stores/summary'
 import { useLLMProfilesStore } from '../stores/llmProfiles'
 import { useOnboardingPhase } from '../composables/useOnboarding'
-import { AxesWithPapers, ListTags, SetPaperTags, ListPapers, ExportBibTeX, ExportCSV, SaveExportFile, GetPaper } from '../../wailsjs/go/app/App'
+import { AxesWithPapers, ListTags, SetPaperTags, ListPapers, ExportBibTeX, ExportCSV, SaveExportFile, GetPaper, DownloadPaper, DownloadApproved, GetFailedDownloadPaperIDs } from '../../wailsjs/go/app/App'
 import { db } from '../../wailsjs/go/models'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 
 const { t } = useI18n()
 const vueRoute = useRoute()
@@ -196,8 +194,8 @@ useOnboardingPhase(4, {
   ],
 })
 
-const showDownloadModal = ref(false)
 const downloadBannerDismissed = ref(false)
+const isAdvancing = ref(false)
 const statusSegment = ref('')
 const statusCounts = ref({ new: 0, approved: 0, rejected: 0, downloaded: 0 })
 const approvedNoPdfCount = ref(0)
@@ -276,9 +274,34 @@ async function loadStatusCounts() {
     }
     approvedNoPdfCount.value = appR.total
   } catch { /* ignore */ }
+  loadFailedDownloads()
 }
 
-// V2 compact columns (no status buttons, less width)
+async function loadFailedDownloads() {
+  if (!profileStore.activeProfileId) return
+  try {
+    const ids = await GetFailedDownloadPaperIDs(profileStore.activeProfileId)
+    failedDownloadPaperIDs.value = new Set(Object.keys(ids).map(Number))
+  } catch {
+    failedDownloadPaperIDs.value = new Set()
+  }
+}
+
+const statusBadgeColor: Record<string, string> = {
+  new: '#3b82f6',
+  approved: '#22c55e',
+  rejected: '#ef4444',
+  downloaded: '#8b5cf6',
+}
+
+const statusBadgeLabel = computed(() => ({
+  new: t('papers.statusNew'),
+  approved: t('papers.statusApproved'),
+  rejected: t('papers.statusRejected'),
+  downloaded: t('papers.statusDownloaded'),
+}))
+
+// V2 compact columns
 const columnsCompact = computed<DataTableColumn<db.Paper>[]>(() => [
   {
     title: t('papers.colScore'),
@@ -287,6 +310,25 @@ const columnsCompact = computed<DataTableColumn<db.Paper>[]>(() => [
     align: 'center',
     render(row) {
       return h(NTag, { size: 'small', type: row.pre_score >= 5 ? 'success' : row.pre_score >= 3 ? 'warning' : 'default', round: true }, () => String(row.pre_score))
+    },
+  },
+  {
+    title: t('v2.papers.colStatus'),
+    key: 'status',
+    width: 100,
+    align: 'center',
+    render(row) {
+      const tags = [
+        h(NTag, { size: 'small', color: { color: statusBadgeColor[row.status] || '#94a3b8' }, round: true },
+          () => (statusBadgeLabel.value as Record<string, string>)[row.status] || row.status),
+      ]
+      if (row.status === 'approved' && failedDownloadPaperIDs.value.has(row.id)) {
+        tags.push(
+          h(NTag, { size: 'small', color: { color: '#f59e0b' }, round: true, style: { marginLeft: '2px' } },
+            () => t('v2.papers.downloadFailed')),
+        )
+      }
+      return h(NSpace, { size: 2, justify: 'center' }, () => tags)
     },
   },
   {
@@ -353,6 +395,8 @@ const axes = ref<db.Axis[]>([])
 const allTags = ref<db.Tag[]>([])
 const tagFilter = ref<number | null>(null)
 const hasSummaryFilter = ref(false)
+const failedDownloadPaperIDs = ref<Set<number>>(new Set())
+const downloadDoneRegistered = ref(false)
 
 const tagOptions = computed(() =>
   allTags.value.map(t => ({ label: t.name, value: t.id }))
@@ -433,11 +477,46 @@ async function removeMonitoringTag(paper: db.Paper) {
 
 async function setStatus(paper: db.Paper, status: string) {
   try {
+    const oldIndex = selectedIndex.value
+    const papers = store.papers
+
+    isAdvancing.value = true
+
+    // Predict whether paper will stay or disappear from the current filter
+    const willDisappear = statusFilter.value !== '' && statusFilter.value !== status
+
+    if (willDisappear) {
+      // Paper disappears — keep index (next paper fills the slot)
+      if (oldIndex >= papers.length - 1) {
+        selectedIndex.value = Math.max(0, papers.length - 2)
+      }
+      // else: same index now points to the next paper
+    } else {
+      // Paper stays visible — advance to next
+      selectedIndex.value = Math.min(oldIndex + 1, papers.length - 1)
+    }
+
     await store.setStatus(paper.id, status)
     paper.status = status
     loadStatusCounts()
+
+    // Validate selection after re-fetch
+    if (store.papers.length > 0 && selectedIndex.value >= 0) {
+      selectedIndex.value = Math.min(selectedIndex.value, store.papers.length - 1)
+      const next = store.papers[selectedIndex.value]
+      if (next) openDetailV2(next)
+    } else {
+      selectedIndex.value = -1
+      selectedPaper.value = null
+    }
+    isAdvancing.value = false
+
+    if (status === 'approved') {
+      DownloadPaper(paper.id).catch(() => { /* fire and forget */ })
+    }
   } catch (e: any) {
     message.error(t('papers.failed', { error: e }))
+    isAdvancing.value = false
   }
 }
 
@@ -522,25 +601,20 @@ async function savePaperTags(tagIDs: number[]) {
   }
 }
 
-// Update selected paper when list changes. Don't auto-select — user must click.
+// Update selected paper when list changes. Preserve position, not ID.
 watch(() => store.papers, (papers) => {
+  if (isAdvancing.value) return
   if (papers.length === 0) {
     selectedIndex.value = -1
     selectedPaper.value = null
     return
   }
-  // Preserve selection if the previously selected paper is still in the list.
-  if (selectedPaper.value) {
-    const idx = papers.findIndex(p => p.id === selectedPaper.value!.id)
-    if (idx >= 0) {
-      selectedIndex.value = idx
-      selectedPaper.value = papers[idx]
-      return
-    }
+  if (selectedIndex.value >= 0 && selectedIndex.value < papers.length) {
+    selectedPaper.value = papers[selectedIndex.value] ?? null
+  } else {
+    selectedIndex.value = -1
+    selectedPaper.value = null
   }
-  // Otherwise deselect.
-  selectedIndex.value = -1
-  selectedPaper.value = null
 })
 
 // Watch filters
@@ -549,13 +623,16 @@ watch([axisFilter, statusFilter, minScoreFilter, maxScoreFilter, yearFromFilter,
   loadStatusCounts()
 })
 
-// Refresh counts when download modal closes
-watch(showDownloadModal, (val) => {
-  if (!val) {
+async function downloadAllApproved() {
+  if (!profileStore.activeProfileId) return
+  try {
+    await DownloadApproved(profileStore.activeProfileId)
     loadStatusCounts()
     downloadBannerDismissed.value = false
+  } catch (e: any) {
+    message.error(t('papers.failed', { error: e?.message || String(e) }))
   }
-})
+}
 
 watch(() => profileStore.activeProfileId, () => {
   if (profileStore.activeProfileId) {
@@ -638,6 +715,10 @@ onMounted(() => {
     if (!Number.isNaN(id)) openPaperById(id)
   }
   document.addEventListener('keydown', handleKeydown, true)
+  if (!downloadDoneRegistered.value) {
+    EventsOn('download:done', loadStatusCounts)
+    downloadDoneRegistered.value = true
+  }
 })
 
 // Re-open when navigating here again with a different ?paper_id while

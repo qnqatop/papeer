@@ -44,8 +44,10 @@ type App struct {
 	cancel    context.CancelFunc // for cancelling search/download
 	radarStop chan struct{}      // close to stop the radar ticker
 	radarMu   sync.Mutex
-	recMu     sync.Mutex // guards RecalculateAIScores
-	summaryMu sync.Mutex // guards summary generation
+	recMu      sync.Mutex // guards RecalculateAIScores
+	summaryMu  sync.Mutex // guards summary generation
+	dlPaperMu  sync.Mutex
+	dlPaperSet map[int64]bool // guards against duplicate single-paper downloads
 }
 
 // LLM-related errors.
@@ -668,6 +670,71 @@ func (a *App) DownloadApproved(profileID int64) error {
 	}()
 
 	return nil
+}
+
+func (a *App) DownloadPaper(paperID int64) error {
+	a.dlPaperMu.Lock()
+	if a.dlPaperSet == nil {
+		a.dlPaperSet = make(map[int64]bool)
+	}
+	if a.dlPaperSet[paperID] {
+		a.dlPaperMu.Unlock()
+		return nil // already downloading this paper
+	}
+	a.dlPaperSet[paperID] = true
+	a.dlPaperMu.Unlock()
+
+	paper, err := a.db.GetPaper(paperID)
+	if err != nil {
+		return err
+	}
+
+	profile, err := a.db.GetProfile(paper.ProfileID)
+	if err != nil {
+		return err
+	}
+	if !IsValidEmail(profile.Email) {
+		return ErrInvalidEmail
+	}
+	if profile.PdfDir == "" {
+		return fmt.Errorf("PDF directory not configured for profile %q", profile.Name)
+	}
+
+	client, err := a.makeHTTPClient(profile.Email)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(profile.PdfDir, 0o755); err != nil {
+		return fmt.Errorf("create pdf dir %q: %w", profile.PdfDir, err)
+	}
+
+	dlSources := buildDownloadSources(profile)
+
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.setCancel(cancel)
+
+	onEvent := func(e download.DownloadEvent) {
+		runtime.EventsEmit(a.ctx, "download:progress", e)
+	}
+
+	engine := download.NewEngine(client, a.db, dlSources, profile.PdfDir, 4, onEvent)
+
+	go func() {
+		engine.DownloadOne(ctx, *paper, profile.Email, 1, 1)
+		cancel()
+		a.clearCancel()
+		runtime.EventsEmit(a.ctx, "download:done", nil)
+		a.dlPaperMu.Lock()
+		delete(a.dlPaperSet, paperID)
+		a.dlPaperMu.Unlock()
+	}()
+
+	return nil
+}
+
+func (a *App) GetFailedDownloadPaperIDs(profileID int64) (map[int64]bool, error) {
+	return a.db.GetFailedDownloadPaperIDs(profileID)
 }
 
 func buildDownloadSources(profile *db.Profile) []download.Source {

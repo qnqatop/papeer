@@ -218,3 +218,63 @@ func TestGetPaperPDFPath_FileNotOnDisk(t *testing.T) {
 		t.Error("expected error for file not on disk")
 	}
 }
+
+func TestGetFailedDownloadPaperIDs(t *testing.T) {
+	d := testDB(t)
+	p := createTestProfile(t, d)
+
+	paper1 := &Paper{ProfileID: p.ID, Title: "Has fail + ok", TitleNormalized: "has fail + ok", Sources: JSONStringSlice{"test"}, Authors: JSONStringSlice{}, ScoreReasons: JSONStringSlice{}, Status: "approved"}
+	paper2 := &Paper{ProfileID: p.ID, Title: "Only fail", TitleNormalized: "only fail", Sources: JSONStringSlice{"test"}, Authors: JSONStringSlice{}, ScoreReasons: JSONStringSlice{}, Status: "approved"}
+	paper3 := &Paper{ProfileID: p.ID, Title: "Only ok", TitleNormalized: "only ok", Sources: JSONStringSlice{"test"}, Authors: JSONStringSlice{}, ScoreReasons: JSONStringSlice{}, Status: "approved"}
+	paper4 := &Paper{ProfileID: p.ID, Title: "No downloads", TitleNormalized: "no downloads", Sources: JSONStringSlice{"test"}, Authors: JSONStringSlice{}, ScoreReasons: JSONStringSlice{}, Status: "approved"}
+	d.UpsertPaper(paper1)
+	d.UpsertPaper(paper2)
+	d.UpsertPaper(paper3)
+	d.UpsertPaper(paper4)
+
+	// Paper 1: both fail and ok → NOT in failed set
+	d.SaveDownload(&Download{PaperID: paper1.ID, Source: "arxiv", Status: "fail", Reason: "no pdf"})
+	d.SaveDownload(&Download{PaperID: paper1.ID, Source: "semantic_scholar", Status: "ok", Filename: ptr.Ptr("paper1.pdf")})
+
+	// Paper 2: only fail → SHOULD be in failed set
+	d.SaveDownload(&Download{PaperID: paper2.ID, Source: "arxiv", Status: "fail", Reason: "timeout"})
+
+	// Paper 3: only ok → NOT in failed set
+	d.SaveDownload(&Download{PaperID: paper3.ID, Source: "semantic_scholar", Status: "ok", Filename: ptr.Ptr("paper3.pdf")})
+
+	// Paper 4: no downloads → NOT in failed set
+
+	ids, err := d.GetFailedDownloadPaperIDs(p.ID)
+	if err != nil {
+		t.Fatalf("GetFailedDownloadPaperIDs: %v", err)
+	}
+
+	if ids[paper1.ID] {
+		t.Error("paper1 (fail+ok) should NOT be in failed set")
+	}
+	if !ids[paper2.ID] {
+		t.Error("paper2 (only fail) SHOULD be in failed set")
+	}
+	if ids[paper3.ID] {
+		t.Error("paper3 (only ok) should NOT be in failed set")
+	}
+	if ids[paper4.ID] {
+		t.Error("paper4 (no downloads) should NOT be in failed set")
+	}
+	if len(ids) != 1 {
+		t.Errorf("len(ids) = %d, want 1", len(ids))
+	}
+}
+
+func TestGetFailedDownloadPaperIDs_EmptyProfile(t *testing.T) {
+	d := testDB(t)
+	p := createTestProfile(t, d)
+
+	ids, err := d.GetFailedDownloadPaperIDs(p.ID)
+	if err != nil {
+		t.Fatalf("GetFailedDownloadPaperIDs: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected empty set, got %d entries", len(ids))
+	}
+}

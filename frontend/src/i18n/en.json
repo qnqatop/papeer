@@ -251,11 +251,13 @@
       "segmentRejected": "Rejected",
       "segmentDownloaded": "Downloaded",
       "selectPaper": "Select a paper on the left",
-      "shortcutsBar": "j/k navigate · a approve · r reject · ? all hotkeys",
+      "shortcutsBar": "j/k navigate · a approve · r reject · auto-advances after action",
       "downloadBanner": "{count} approved not downloaded",
-      "downloadPdf": "Download PDF",
+      "downloadAllApproved": "Download {count} Papers",
       "hasSummary": "With summary only",
-      "paperNotFound": "Paper not found"
+      "paperNotFound": "Paper not found",
+      "colStatus": "Status",
+      "downloadFailed": "DL failed"
     },
     "analysis": {
       "tabOverview": "Overview",
@@ -657,11 +659,11 @@
     },
     "papers": {
       "filtersTitle": "Filter & Sort",
-      "filtersDescription": "Use search and the Filters button to narrow results: score range, year, citations, tags, and more.",
+      "filtersDescription": "Use search and the Filters button to narrow results: score range, year, citations, tags, and more. Each row now shows a colored status badge.",
       "tableTitle": "Split Layout",
-      "tableDescription": "Click a row on the left to see details on the right. Use status segments above to filter by New / Approved / Rejected / Downloaded.",
+      "tableDescription": "Click a row on the left to see details on the right. Use status segments above to filter by New / Approved / Rejected / Downloaded. Buttons adapt to the current filter.",
       "shortcutsTitle": "Keyboard Shortcuts",
-      "shortcutsDescription": "j / k — navigate up/down\na — approve current paper\nr — reject current paper\n\nWorks when no text input is focused."
+      "shortcutsDescription": "j / k — navigate up/down\na — approve current paper\nr — reject current paper\n\nAfter each action, the next paper is selected automatically. Works when no text input is focused."
     },
     "analysis": {
       "title": "Analysis Dashboard",

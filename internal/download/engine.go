@@ -75,15 +75,15 @@ func (e *Engine) DownloadAll(ctx context.Context, papers []db.Paper, email strin
 		go func() {
 			defer wg.Done()
 			for idx := range jobs {
-				if ctx.Err() != nil {
-					// Drain remaining jobs so the sender doesn't block.
-					for range jobs {
-					}
-					return
+			if ctx.Err() != nil {
+				// Drain remaining jobs so the sender doesn't block.
+				for range jobs {
 				}
-				cur := counter.inc()
-				e.downloadOne(ctx, papers[idx], email, cur, total)
+				return
 			}
+			cur := counter.inc()
+			e.DownloadOne(ctx, papers[idx], email, cur, total)
+		}
 		}()
 	}
 
@@ -102,8 +102,8 @@ sendLoop:
 	e.onEvent(DownloadEvent{Type: "complete", Total: total})
 }
 
-// downloadOne tries all sources in fallback order for a single paper.
-func (e *Engine) downloadOne(ctx context.Context, paper db.Paper, email string, current, total int) {
+// DownloadOne tries all sources in fallback order for a single paper.
+func (e *Engine) DownloadOne(ctx context.Context, paper db.Paper, email string, current, total int) {
 	info := PaperInfo{
 		DOI:     ptr.Val(paper.DOI),
 		ArxivID: ptr.Val(paper.ArxivID),

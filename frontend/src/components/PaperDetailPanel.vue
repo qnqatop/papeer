@@ -53,12 +53,14 @@
         <div class="detail-actions">
           <n-button-group size="small">
             <n-button
+              v-if="showApproveButton"
               :type="paper.status === 'approved' ? 'success' : 'default'"
               @click="$emit('setStatus', paper, paper.status === 'approved' ? 'new' : 'approved')"
             >
               {{ t('papers.approve') }}
             </n-button>
             <n-button
+              v-if="showRejectButton"
               :type="paper.status === 'rejected' ? 'error' : 'default'"
               @click="$emit('setStatus', paper, paper.status === 'rejected' ? 'new' : 'rejected')"
             >
@@ -179,7 +181,21 @@ const message = useMessage()
 const props = defineProps<{
   paper: db.Paper | null
   tags: db.Tag[]
+  statusFilter?: string
 }>()
+
+const showApproveButton = computed(() => {
+  if (!props.statusFilter || props.statusFilter === 'new') return true
+  if (props.statusFilter === 'rejected') return true
+  return false
+})
+
+const showRejectButton = computed(() => {
+  if (!props.statusFilter || props.statusFilter === 'new') return true
+  if (props.statusFilter === 'approved') return true
+  if (props.statusFilter === 'downloaded') return true
+  return false
+})
 
 defineEmits<{
   setStatus: [paper: db.Paper, status: string]

@@ -104,6 +104,10 @@ export const useProgressStore = defineStore('progress', () => {
     })
 
     EventsOn('download:progress', (event: DownloadEvent) => {
+      if (!downloading.value) {
+        resetDownload()
+        downloading.value = true
+      }
       downloadEvents.value.push(event)
       current.value = event.current
       total.value = event.total
@@ -123,10 +127,13 @@ export const useProgressStore = defineStore('progress', () => {
       const done = downloadEvents.value.filter(e => e.type === 'done').length
       const failed = downloadEvents.value.filter(e => e.type === 'fail').length
       lastEvent.value = 'Download complete'
-      notify(
-        failed > 0 ? 'warning' : 'success',
-        `Download complete: ${done} downloaded, ${failed} failed`,
-      )
+      // Only show toast for batch downloads, not single-paper auto-downloads
+      if (total.value > 1) {
+        notify(
+          failed > 0 ? 'warning' : 'success',
+          `Download complete: ${done} downloaded, ${failed} failed`,
+        )
+      }
       onDownloadDone?.()
     })
 
