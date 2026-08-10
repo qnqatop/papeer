@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/qnqatop/papeer/internal/export"
 	"github.com/qnqatop/papeer/internal/recsys"
+	"github.com/qnqatop/papeer/internal/updater"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,11 +36,68 @@ var Version = "dev"
 // AppVersion returns the build version string for display in the UI footer.
 func (a *App) AppVersion() string { return Version }
 
+type UpdateInfo = updater.UpdateInfo
+
+func (a *App) CheckForUpdates() (*UpdateInfo, error) {
+	if a.updater == nil {
+		return nil, fmt.Errorf("updater not initialized")
+	}
+	return a.updater.CheckForUpdates()
+}
+
+func (a *App) DownloadUpdate(assetURL string) error {
+	if a.updater == nil {
+		return fmt.Errorf("updater not initialized")
+	}
+
+	stagingDir, err := os.MkdirTemp("", "papeer-update")
+	if err != nil {
+		return fmt.Errorf("create staging dir: %w", err)
+	}
+
+	archivePath, err := a.updater.DownloadUpdate(assetURL, func(downloaded, total int64) {
+		percentage := float64(0)
+		if total > 0 {
+			percentage = float64(downloaded) / float64(total) * 100
+		}
+		runtime.EventsEmit(a.ctx, "update:download-progress", map[string]interface{}{
+			"percentage": percentage,
+			"downloaded": downloaded,
+			"total":      total,
+		})
+	})
+	if err != nil {
+		os.RemoveAll(stagingDir)
+		return err
+	}
+	defer os.Remove(archivePath)
+
+	if _, err := a.updater.ExtractArchive(archivePath, stagingDir); err != nil {
+		os.RemoveAll(stagingDir)
+		return err
+	}
+
+	a.updater.SetStagingDir(stagingDir)
+	return nil
+}
+
+func (a *App) InstallAndRestart() error {
+	if a.updater == nil {
+		return fmt.Errorf("updater not initialized")
+	}
+	stagingDir := a.updater.GetStagingDir()
+	if stagingDir == "" {
+		return fmt.Errorf("no downloaded update to install")
+	}
+	return a.updater.InstallAndRestart(stagingDir)
+}
+
 // App is the Wails bindings facade.
 // All exported methods are callable from the Vue frontend.
 type App struct {
 	ctx       context.Context
 	db        *db.DB
+	updater   *updater.Updater
 	cancelMu  sync.Mutex         // guards cancel
 	cancel    context.CancelFunc // for cancelling search/download
 	radarStop chan struct{}      // close to stop the radar ticker
@@ -102,7 +160,9 @@ Keep it under 200 words.`
 
 // NewApp creates a new App.
 func NewApp() *App {
-	return &App{}
+	return &App{
+		updater: updater.NewUpdater(Version),
+	}
 }
 
 // dirExists reports whether path exists and is a directory.

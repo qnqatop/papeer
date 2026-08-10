@@ -299,6 +299,62 @@
             <n-text depth="3" style="font-size: 11px; margin-top: 8px">
               {{ t('v2.settings.about.copyright') }}
             </n-text>
+
+            <n-divider style="margin: 12px 0" />
+
+            <n-h4 style="margin: 0 0 8px 0">{{ t('nav.settings') }} / {{ t('v2.settings.sections.about') }}</n-h4>
+            <n-space vertical :size="8">
+              <n-text depth="3" style="font-size: 13px">
+                {{ t('updates.check') }}: <n-text strong>{{ appVersion || 'dev' }}</n-text>
+                <template v-if="updateStatus === 'up-to-date'">
+                  — {{ t('updates.upToDate') }}
+                </template>
+                <template v-else-if="updateStatus === 'available'">
+                  — {{ t('updates.updateAvailable', { version: latestVersion }) }}
+                </template>
+              </n-text>
+
+              <n-space :size="8">
+                <n-button
+                  :loading="checkingUpdate"
+                  :disabled="isDownloading"
+                  @click="checkUpdates"
+                >
+                  {{ checkingUpdate ? t('updates.checking') : t('updates.check') }}
+                </n-button>
+                <n-button
+                  v-if="updateStatus === 'available' && !isUpdateReady"
+                  type="primary"
+                  :disabled="isDownloading"
+                  :loading="isDownloading"
+                  @click="downloadUpdate"
+                >
+                  {{ isDownloading ? t('updates.downloading') : t('updates.download') }}
+                </n-button>
+                <n-button
+                  v-if="isUpdateReady"
+                  type="success"
+                  @click="installUpdate"
+                >
+                  {{ t('updates.restart') }}
+                </n-button>
+              </n-space>
+
+              <n-progress
+                v-if="isDownloading"
+                type="line"
+                :percentage="downloadPercentage"
+                :indicator-placement="'inside'"
+                status="success"
+              />
+
+              <n-text v-if="updateError" type="error" style="font-size: 12px">
+                {{ updateError }}
+              </n-text>
+              <n-text v-if="updateStatus === 'restarting'" style="font-size: 13px">
+                {{ t('updates.restarting') }}
+              </n-text>
+            </n-space>
           </n-space>
         </template>
       </div>
@@ -312,8 +368,8 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   NCard, NSpace, NButton, NIcon, NSelect, NText, NInput,
-  NTag, NSwitch, NPopconfirm, NPopover, NMenu, NH3, NEmpty,
-  NDivider,
+  NTag, NSwitch, NPopconfirm, NPopover, NMenu, NH3, NH4, NEmpty,
+  NDivider, NProgress,
   useMessage,
 } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
@@ -328,8 +384,9 @@ import {
   GetSettings, SaveSetting, TestProxy,
   ListTags, CreateTag as CreateTagAPI, DeleteTag as DeleteTagAPI,
   RunRadar, DeleteProfile as DeleteProfileAPI, AppVersion,
-  CheckSearchProviders,
+  CheckSearchProviders, CheckForUpdates, DownloadUpdate, InstallAndRestart,
 } from '../../wailsjs/go/app/App'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { app, db } from '../../wailsjs/go/models'
 import ProfileFormModal from '../components/ProfileFormModal.vue'
 import LLMProfileFormModal from '../components/LLMProfileFormModal.vue'
@@ -655,6 +712,64 @@ function resetPrompt() {
 }
 
 const appVersion = ref('')
+
+const updateStatus = ref<'idle' | 'up-to-date' | 'available' | 'restarting'>('idle')
+const latestVersion = ref('')
+const checkingUpdate = ref(false)
+const isDownloading = ref(false)
+const downloadPercentage = ref(0)
+const isUpdateReady = ref(false)
+const updateError = ref('')
+const downloadAssetURL = ref('')
+
+async function checkUpdates() {
+  updateError.value = ''
+  checkingUpdate.value = true
+  try {
+    const info = await CheckForUpdates()
+    if (info.hasUpdate) {
+      updateStatus.value = 'available'
+      latestVersion.value = info.latestVersion
+      downloadAssetURL.value = info.assetURL
+      message.info(t('updates.updateAvailable', { version: info.latestVersion }))
+    } else {
+      updateStatus.value = 'up-to-date'
+      message.success(t('updates.upToDate'))
+    }
+  } catch (e: any) {
+    updateError.value = e?.message || t('updates.checkFailed', { error: String(e) })
+  } finally {
+    checkingUpdate.value = false
+  }
+}
+
+async function downloadUpdate() {
+  if (!downloadAssetURL.value) return
+  updateError.value = ''
+  isDownloading.value = true
+  downloadPercentage.value = 0
+  try {
+    await DownloadUpdate(downloadAssetURL.value)
+    isDownloading.value = false
+    isUpdateReady.value = true
+  } catch (e: any) {
+    isDownloading.value = false
+    updateError.value = e?.message || t('updates.downloadFailed', { error: String(e) })
+  }
+}
+
+function installUpdate() {
+  updateStatus.value = 'restarting'
+  updateError.value = ''
+  InstallAndRestart().catch((e: any) => {
+    updateError.value = e?.message || t('updates.installFailed', { error: String(e) })
+    updateStatus.value = 'available'
+  })
+}
+
+EventsOn('update:download-progress', (data: { percentage: number; downloaded: number; total: number }) => {
+  downloadPercentage.value = Math.round(data.percentage)
+})
 
 onMounted(() => {
   loadSettings()

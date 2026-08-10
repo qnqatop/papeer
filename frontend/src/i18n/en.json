@@ -676,5 +676,20 @@
     "demoDeleted": "Demo profile deleted",
     "skipConfirmTitle": "Skip tour?",
     "skipConfirmMessage": "A demo profile was created for the tour. Would you like to delete it or keep it for exploration?"
+  },
+  "updates": {
+    "check": "Check for Updates",
+    "checking": "Checking...",
+    "upToDate": "You are up to date",
+    "updateAvailable": "New version {version} available",
+    "download": "Download Update",
+    "downloading": "Downloading...",
+    "restart": "Restart to Update",
+    "restarting": "Restarting...",
+    "checkFailed": "Failed to check for updates: {error}",
+    "downloadFailed": "Download failed: {error}",
+    "installFailed": "Installation failed: {error}",
+    "rateLimited": "Update check temporarily unavailable, try again later",
+    "unsupportedPlatform": "Update is not available for your platform"
   }
 }
