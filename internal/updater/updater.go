@@ -43,9 +43,13 @@ type Updater struct {
 }
 
 func NewUpdater(version string) *Updater {
+	apiBase := githubAPI
+	if envBase := os.Getenv("PAPEER_UPDATE_API"); envBase != "" {
+		apiBase = envBase
+	}
 	return &Updater{
 		currentVersion: version,
-		apiBase:        githubAPI,
+		apiBase:        apiBase,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
 	}
 }
