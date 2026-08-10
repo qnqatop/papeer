@@ -302,7 +302,7 @@
 
             <n-divider style="margin: 12px 0" />
 
-            <n-h4 style="margin: 0 0 8px 0">{{ t('nav.settings') }} / {{ t('v2.settings.sections.about') }}</n-h4>
+            <n-h4 id="updates" style="margin: 0 0 8px 0">{{ t('updates.section') }}</n-h4>
             <n-space vertical :size="8">
               <n-text depth="3" style="font-size: 13px">
                 {{ t('updates.check') }}: <n-text strong>{{ appVersion || 'dev' }}</n-text>
@@ -354,6 +354,17 @@
               <n-text v-if="updateStatus === 'restarting'" style="font-size: 13px">
                 {{ t('updates.restarting') }}
               </n-text>
+
+              <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px">
+                <n-switch
+                  :value="autoUpdateCheck"
+                  @update:value="toggleAutoUpdateCheck"
+                  size="small"
+                />
+                <n-text depth="3" style="font-size: 13px">
+                  {{ t('updates.autoCheck') }}
+                </n-text>
+              </div>
             </n-space>
           </n-space>
         </template>
@@ -384,12 +395,12 @@ import {
   GetSettings, SaveSetting, TestProxy,
   ListTags, CreateTag as CreateTagAPI, DeleteTag as DeleteTagAPI,
   RunRadar, DeleteProfile as DeleteProfileAPI, AppVersion,
-  CheckSearchProviders, CheckForUpdates, DownloadUpdate, InstallAndRestart,
+  CheckSearchProviders,
 } from '../../wailsjs/go/app/App'
-import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { app, db } from '../../wailsjs/go/models'
 import ProfileFormModal from '../components/ProfileFormModal.vue'
 import LLMProfileFormModal from '../components/LLMProfileFormModal.vue'
+import { useUpdater } from '../composables/useUpdater'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -472,6 +483,8 @@ async function loadSettings() {
     const settings = await GetSettings()
     proxyURL.value = settings['proxy_url'] || ''
     s2ApiKey.value = settings['semantic_scholar_api_key'] || ''
+    // Absent = enabled by default.
+    autoUpdateCheck.value = settings['auto_update_check'] !== 'false'
   } catch { /* ignore */ }
 }
 
@@ -713,63 +726,54 @@ function resetPrompt() {
 
 const appVersion = ref('')
 
-const updateStatus = ref<'idle' | 'up-to-date' | 'available' | 'restarting'>('idle')
-const latestVersion = ref('')
-const checkingUpdate = ref(false)
-const isDownloading = ref(false)
-const downloadPercentage = ref(0)
-const isUpdateReady = ref(false)
-const updateError = ref('')
-const downloadAssetURL = ref('')
+const {
+  updateStatus,
+  latestVersion,
+  checkingUpdate,
+  isDownloading,
+  downloadPercentage,
+  isUpdateReady,
+  updateError,
+  checkUpdates: runCheckUpdates,
+  downloadUpdate: runDownloadUpdate,
+  installUpdate: runInstallUpdate,
+} = useUpdater()
 
 async function checkUpdates() {
-  updateError.value = ''
-  checkingUpdate.value = true
   try {
-    const info = await CheckForUpdates()
-    if (info.hasUpdate) {
-      updateStatus.value = 'available'
-      latestVersion.value = info.latestVersion
-      downloadAssetURL.value = info.assetURL
-      message.info(t('updates.updateAvailable', { version: info.latestVersion }))
-    } else {
-      updateStatus.value = 'up-to-date'
+    await runCheckUpdates()
+    if (updateStatus.value === 'available') {
+      message.info(t('updates.updateAvailable', { version: latestVersion.value }))
+    } else if (updateStatus.value === 'up-to-date') {
       message.success(t('updates.upToDate'))
     }
   } catch (e: any) {
-    updateError.value = e?.message || t('updates.checkFailed', { error: String(e) })
-  } finally {
-    checkingUpdate.value = false
+    updateError.value = t('updates.checkFailed', { error: e?.message || String(e) })
   }
 }
 
 async function downloadUpdate() {
-  if (!downloadAssetURL.value) return
-  updateError.value = ''
-  isDownloading.value = true
-  downloadPercentage.value = 0
   try {
-    await DownloadUpdate(downloadAssetURL.value)
-    isDownloading.value = false
-    isUpdateReady.value = true
+    await runDownloadUpdate()
   } catch (e: any) {
-    isDownloading.value = false
-    updateError.value = e?.message || t('updates.downloadFailed', { error: String(e) })
+    updateError.value = t('updates.downloadFailed', { error: e?.message || String(e) })
   }
 }
 
 function installUpdate() {
-  updateStatus.value = 'restarting'
-  updateError.value = ''
-  InstallAndRestart().catch((e: any) => {
-    updateError.value = e?.message || t('updates.installFailed', { error: String(e) })
-    updateStatus.value = 'available'
+  runInstallUpdate().catch((e: any) => {
+    updateError.value = t('updates.installFailed', { error: e?.message || String(e) })
   })
 }
 
-EventsOn('update:download-progress', (data: { percentage: number; downloaded: number; total: number }) => {
-  downloadPercentage.value = Math.round(data.percentage)
-})
+const autoUpdateCheck = ref(true)
+
+async function toggleAutoUpdateCheck(value: boolean) {
+  autoUpdateCheck.value = value
+  try {
+    await SaveSetting('auto_update_check', value ? 'true' : 'false')
+  } catch { /* ignore */ }
+}
 
 onMounted(() => {
   loadSettings()
@@ -778,6 +782,13 @@ onMounted(() => {
   llmStore.fetch()
   fetchTags()
   AppVersion().then((v) => { appVersion.value = v }).catch(() => {})
+
+  // Arrived from the update banner ("Обновить") — open the About section and
+  // auto-run the check so the download button is ready without an extra click.
+  if (router.currentRoute.value.hash === '#updates') {
+    activeSection.value = 'about'
+    checkUpdates()
+  }
 })
 
 watch(() => profileStore.activeProfileId, () => { fetchTags() })

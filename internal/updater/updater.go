@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	repoOwner  = "qnqatop"
-	repoName   = "papeer"
-	githubAPI  = "https://api.github.com"
-	userAgent  = "papeer-updater"
+	repoOwner = "qnqatop"
+	repoName  = "papeer"
+	githubAPI = "https://api.github.com"
+	userAgent = "papeer-updater"
 )
 
 type UpdateInfo struct {
@@ -33,6 +33,9 @@ type UpdateInfo struct {
 	AssetURL       string `json:"assetURL"`
 	ReleaseURL     string `json:"releaseURL"`
 	ReleaseNotes   string `json:"releaseNotes"`
+	// Severity is the semver bump of LatestVersion over CurrentVersion:
+	// "major", "minor", "patch", or "none" (no update / unparseable).
+	Severity string `json:"severity"`
 }
 
 type Updater struct {
@@ -83,9 +86,9 @@ func archiveExt() string {
 }
 
 type githubRelease struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
-	Body    string `json:"body"`
+	TagName string        `json:"tag_name"`
+	HTMLURL string        `json:"html_url"`
+	Body    string        `json:"body"`
 	Assets  []githubAsset `json:"assets"`
 }
 
@@ -95,17 +98,38 @@ type githubAsset struct {
 	Size               int64  `json:"size"`
 }
 
+func normalizeVersion(v string) string {
+	if !strings.HasPrefix(v, "v") {
+		return "v" + v
+	}
+	return v
+}
+
 func versionIsNewer(current, latest string) bool {
-	if !strings.HasPrefix(current, "v") {
-		current = "v" + current
-	}
-	if !strings.HasPrefix(latest, "v") {
-		latest = "v" + latest
-	}
+	current = normalizeVersion(current)
+	latest = normalizeVersion(latest)
 	if semver.IsValid(current) && semver.IsValid(latest) {
 		return semver.Compare(latest, current) > 0
 	}
 	return current != latest
+}
+
+// versionBump reports the semver significance of latest over current:
+// "major", "minor", "patch", or "none" when latest is not newer (or either
+// version is unparseable).
+func versionBump(current, latest string) string {
+	current = normalizeVersion(current)
+	latest = normalizeVersion(latest)
+	if !semver.IsValid(current) || !semver.IsValid(latest) || semver.Compare(latest, current) <= 0 {
+		return "none"
+	}
+	if semver.Major(current) != semver.Major(latest) {
+		return "major"
+	}
+	if semver.MajorMinor(current) != semver.MajorMinor(latest) {
+		return "minor"
+	}
+	return "patch"
 }
 
 func (u *Updater) SetStagingDir(dir string) {
@@ -167,6 +191,7 @@ func (u *Updater) CheckForUpdates() (*UpdateInfo, error) {
 	current := u.currentVersion
 	latest := release.TagName
 	info.HasUpdate = versionIsNewer(current, latest)
+	info.Severity = versionBump(current, latest)
 
 	assetURL, err := resolveAsset(release.Assets)
 	if err != nil {
@@ -279,7 +304,6 @@ func extractZip(zipPath, destDir string) (string, error) {
 	}
 	defer reader.Close()
 
-	var binaryPath string
 	for _, f := range reader.File {
 		if f.FileInfo().IsDir() {
 			continue
@@ -287,34 +311,53 @@ func extractZip(zipPath, destDir string) (string, error) {
 		if err := extractZipFile(f, destDir); err != nil {
 			return "", err
 		}
-		if binaryPath == "" {
-			binaryPath = validateBinary(filepath.Join(destDir, f.Name))
-		}
 	}
 
-	if binaryPath == "" {
-		// macOS .app bundle — find the actual executable inside.
-		entries, _ := os.ReadDir(destDir)
-		for _, e := range entries {
-			if e.IsDir() && strings.HasSuffix(e.Name(), ".app") {
-				appBinary := filepath.Join(destDir, e.Name(), "Contents", "MacOS")
-				binEntries, err := os.ReadDir(appBinary)
-				if err == nil && len(binEntries) > 0 {
-					binaryPath = filepath.Join(appBinary, binEntries[0].Name())
-					if info, err := os.Stat(binaryPath); err != nil || info.Size() == 0 {
-						binaryPath = ""
-					}
-				}
-				break
-			}
-		}
-	}
-
+	binaryPath := findExtractedBinary(destDir)
 	if binaryPath == "" {
 		return "", fmt.Errorf("executable binary not found in archive")
 	}
 
 	return binaryPath, nil
+}
+
+// findExtractedBinary locates the executable inside an extracted archive.
+// For a macOS .app bundle it looks under Contents/MacOS; otherwise (Windows
+// .exe, Linux binary) it returns the first valid top-level regular file. This
+// avoids mistaking Info.plist or a resource file for the executable.
+func findExtractedBinary(destDir string) string {
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		return ""
+	}
+
+	// macOS: look inside a .app bundle first.
+	for _, e := range entries {
+		if e.IsDir() && strings.HasSuffix(e.Name(), ".app") {
+			macOSDir := filepath.Join(destDir, e.Name(), "Contents", "MacOS")
+			binEntries, err := os.ReadDir(macOSDir)
+			if err != nil {
+				continue
+			}
+			for _, b := range binEntries {
+				if cand := validateBinary(filepath.Join(macOSDir, b.Name())); cand != "" {
+					return cand
+				}
+			}
+		}
+	}
+
+	// Flat archive: first valid regular file at the top level.
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if cand := validateBinary(filepath.Join(destDir, e.Name())); cand != "" {
+			return cand
+		}
+	}
+
+	return ""
 }
 
 func extractZipFile(f *zip.File, destDir string) error {
@@ -340,7 +383,23 @@ func extractZipFile(f *zip.File, destDir string) error {
 		return err
 	}
 
-	out, err := os.Create(target)
+	// Recreate symlinks as symlinks (macOS .app frameworks use them); the
+	// entry's content is the link target.
+	if f.Mode()&os.ModeSymlink != 0 {
+		linkTarget, err := io.ReadAll(rc)
+		if err != nil {
+			return err
+		}
+		os.Remove(target)
+		return os.Symlink(string(linkTarget), target)
+	}
+
+	// Preserve the archived file mode so executables keep their +x bit.
+	mode := f.Mode().Perm()
+	if mode == 0 {
+		mode = 0o644
+	}
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
@@ -364,7 +423,6 @@ func extractTarGz(tgzPath, destDir string) (string, error) {
 	defer gzReader.Close()
 
 	tarReader := tar.NewReader(gzReader)
-	var binaryPath string
 
 	for {
 		header, err := tarReader.Next()
@@ -388,7 +446,11 @@ func extractTarGz(tgzPath, destDir string) (string, error) {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return "", err
 			}
-			out, err := os.Create(target)
+			mode := os.FileMode(header.Mode).Perm()
+			if mode == 0 {
+				mode = 0o644
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
 				return "", err
 			}
@@ -397,12 +459,10 @@ func extractTarGz(tgzPath, destDir string) (string, error) {
 				return "", err
 			}
 			out.Close()
-			if binaryPath == "" {
-				binaryPath = validateBinary(target)
-			}
 		}
 	}
 
+	binaryPath := findExtractedBinary(destDir)
 	if binaryPath == "" {
 		return "", fmt.Errorf("executable binary not found in archive")
 	}
@@ -473,11 +533,9 @@ func installMacOS(stagingDir string) error {
 		return fmt.Errorf("read staging dir: %w", err)
 	}
 	var newApp string
-	var appName string
 	for _, e := range entries {
 		if e.IsDir() && strings.HasSuffix(e.Name(), ".app") {
 			newApp = filepath.Join(stagingDir, e.Name())
-			appName = e.Name()
 			break
 		}
 	}
@@ -497,34 +555,74 @@ func installMacOS(stagingDir string) error {
 		return fmt.Errorf("new binary is missing or empty: %w", err)
 	}
 
-	appDir := filepath.Dir(oldApp) // e.g., /Applications
-	trashDir := filepath.Join(os.Getenv("HOME"), ".Trash")
-	os.MkdirAll(trashDir, 0o755)
-
-	// Move the old .app to Trash.
-	trashPath := filepath.Join(trashDir, appName)
-	_ = os.RemoveAll(trashPath) // Remove existing if any.
-	if err := os.Rename(oldApp, trashPath); err != nil {
-		return fmt.Errorf("move old app to trash: %w — check permissions", err)
+	// Move the old bundle aside to a sibling path on the SAME volume, then
+	// install the new one in its place. A sibling backup avoids ~/.Trash name
+	// clashes (a leftover Papeer.app from a prior update makes os.Rename fail
+	// with EEXIST) and cross-volume EXDEV when the app lives on an external
+	// disk. The backup is removed once the swap succeeds.
+	backupPath := fmt.Sprintf("%s.old-%d", oldApp, os.Getpid())
+	_ = os.RemoveAll(backupPath)
+	if err := os.Rename(oldApp, backupPath); err != nil {
+		return fmt.Errorf("move old app aside: %w — check permissions", err)
 	}
 
-	// Copy the new .app to the original location.
-	targetApp := filepath.Join(appDir, appName)
-	if err := copyDir(newApp, targetApp); err != nil {
-		// Try to restore the old app.
-		os.Rename(trashPath, oldApp)
+	// Copy the new .app into the original location.
+	if err := copyDir(newApp, oldApp); err != nil {
+		os.RemoveAll(oldApp)
+		os.Rename(backupPath, oldApp) // restore the original app
 		return fmt.Errorf("copy new app: %w — check permissions", err)
 	}
 
-	// Spawn the new process.
-	cmd := exec.Command(newBinary)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Start()
+	// Integrity check after placement: verify the installed binary before
+	// launching. If it's missing/empty, roll back to the original app.
+	targetBinary := filepath.Join(oldApp, "Contents", "MacOS", filepath.Base(newBinary))
+	if info, err := os.Stat(targetBinary); err != nil || info.Size() == 0 {
+		os.RemoveAll(oldApp)
+		os.Rename(backupPath, oldApp) // restore the original app
+		return fmt.Errorf("installed app failed verification")
+	}
+
+	// Ensure the installed binary is executable (some archives drop the +x bit).
+	os.Chmod(targetBinary, 0o755)
+
+	// Swap succeeded — drop the backup (best effort; a leftover is harmless).
+	os.RemoveAll(backupPath)
+
+	// Relaunch through LaunchServices (`open`) so the new instance gets a
+	// proper GUI session and appears in the Dock. Fall back to exec'ing the
+	// binary directly. Only exit once relaunch is under way; if both fail,
+	// return the error and keep the current process alive so the user isn't
+	// left with nothing.
+	if err := exec.Command("open", "-n", oldApp).Run(); err != nil {
+		cmd := exec.Command(targetBinary)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if startErr := cmd.Start(); startErr != nil {
+			return fmt.Errorf("relaunch failed (open: %v; exec: %w)", err, startErr)
+		}
+	}
 
 	os.Exit(0)
 	return nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func copyDir(src, dst string) error {
@@ -537,6 +635,16 @@ func copyDir(src, dst string) error {
 
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode())
+		}
+
+		// Preserve symlinks (filepath.Walk uses Lstat, so ModeSymlink is set).
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			os.Remove(target)
+			return os.Symlink(linkTarget, target)
 		}
 
 		srcFile, err := os.Open(path)
@@ -554,6 +662,12 @@ func copyDir(src, dst string) error {
 		_, err = io.Copy(dstFile, srcFile)
 		return err
 	})
+}
+
+// psQuote returns s as a single-quoted PowerShell string literal with any
+// embedded single quotes doubled.
+func psQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 func installWindows(stagingDir string) error {
@@ -587,11 +701,14 @@ func installWindows(stagingDir string) error {
 	}
 
 	scriptPath := filepath.Join(os.TempDir(), "papeer-update.ps1")
+	// Paths are emitted as single-quoted PowerShell literals (no interpolation)
+	// with embedded quotes doubled, so a stray character in a path cannot break
+	// out of the string or inject commands.
 	script := fmt.Sprintf(`Start-Sleep -Seconds 3
-Copy-Item -Path "%s" -Destination "%s" -Force
-Start-Process -FilePath "%s"
+Copy-Item -Path %s -Destination %s -Force
+Start-Process -FilePath %s
 Remove-Item -Path $MyInvocation.MyCommand.Path -Force
-`, newExe, exePath, exePath)
+`, psQuote(newExe), psQuote(exePath), psQuote(exePath))
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0o644); err != nil {
 		return fmt.Errorf("write update script: %w", err)
@@ -634,11 +751,23 @@ func installLinux(stagingDir string) error {
 		return fmt.Errorf("new binary is missing or empty: %w", err)
 	}
 
-	// Make the new binary executable.
-	os.Chmod(newBinary, 0o755)
-
-	if err := os.Rename(newBinary, exePath); err != nil {
+	// Copy the new binary to a sibling temp file on the SAME filesystem as the
+	// target, then rename it over the running binary. A direct os.Rename from
+	// the OS temp dir fails with EXDEV when /tmp is a separate mount (tmpfs),
+	// so staging next to the target is required for the atomic replace to work.
+	tmpPath := exePath + ".new"
+	if err := copyFile(newBinary, tmpPath, 0o755); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("stage new binary next to target: %w — check permissions", err)
+	}
+	if err := os.Rename(tmpPath, exePath); err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("replace binary: %w — check permissions", err)
+	}
+
+	// Integrity check after placement, before restart.
+	if info, err := os.Stat(exePath); err != nil || info.Size() == 0 {
+		return fmt.Errorf("installed binary failed verification")
 	}
 
 	return syscall.Exec(exePath, os.Args, os.Environ())

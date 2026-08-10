@@ -1,6 +1,7 @@
 <template>
   <n-layout style="height: 100vh">
     <AppHeader @open-settings="router.push({ name: 'settings' })" />
+    <UpdateBanner />
     <n-layout has-sider style="height: calc(100vh - 56px)">
       <n-layout-sider
         bordered
@@ -95,6 +96,7 @@ import { DeleteProfile, ProfilesNeedingEmail } from '../wailsjs/go/app/App'
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
 import { db } from '../wailsjs/go/models'
 import AppHeader from './components/layout/AppHeader.vue'
+import UpdateBanner from './components/layout/UpdateBanner.vue'
 import WelcomeCard from './components/layout/WelcomeCard.vue'
 import ProfileFormModal from './components/ProfileFormModal.vue'
 

@@ -690,6 +690,12 @@
     "downloadFailed": "Download failed: {error}",
     "installFailed": "Installation failed: {error}",
     "rateLimited": "Update check temporarily unavailable, try again later",
-    "unsupportedPlatform": "Update is not available for your platform"
+    "unsupportedPlatform": "Update is not available for your platform",
+    "section": "Updates",
+    "autoCheck": "Check for updates on startup",
+    "banner": {
+      "available": "New version {version} is available",
+      "action": "Update"
+    }
   }
 }

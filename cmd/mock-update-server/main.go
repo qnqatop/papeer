@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -37,6 +38,7 @@ func main() {
 
 	var assetName, assetURL string
 	var assetData []byte
+	var err error
 
 	switch runtime.GOOS {
 	case "darwin":
@@ -50,21 +52,46 @@ func main() {
 		assetURL = "/dl/linux.tar.gz"
 	}
 
-	// Build a dummy "updated" binary.
-	dummyBinary, err := buildDummyBinary()
-	if err != nil {
-		log.Printf("WARNING: cannot build dummy binary: %v — serving empty archive", err)
-		dummyBinary = []byte("dummy")
-	}
+	// Package the REAL built app so the update installs a working, launchable
+	// bundle (a visible end-to-end test). Point PAPEER_REAL_APP at a .app
+	// (macOS) or a binary (Linux/Windows). It MUST live outside the install
+	// target (build/bin/Papeer.app) — otherwise the updater overwrites the very
+	// bundle we serve and corrupts it. Fall back to a throwaway dummy otherwise.
+	realPath := os.Getenv("PAPEER_REAL_APP")
 
-	// Create archive in the expected format.
-	if runtime.GOOS == "linux" {
-		assetData, err = createTarGz("papeer", dummyBinary)
+	if realPath != "" {
+		log.Printf("Packaging REAL app from %s", realPath)
+		if runtime.GOOS == "darwin" {
+			assetData, err = zipApp(realPath)
+		} else {
+			payload, readErr := os.ReadFile(realPath)
+			if readErr != nil {
+				log.Fatalf("read real binary: %v", readErr)
+			}
+			if runtime.GOOS == "linux" {
+				assetData, err = createTarGz("papeer", payload)
+			} else {
+				assetData, err = createZip(assetName, payload)
+			}
+		}
+		if err != nil {
+			log.Fatalf("package real app: %v", err)
+		}
 	} else {
-		assetData, err = createZip(assetName, dummyBinary)
-	}
-	if err != nil {
-		log.Fatalf("create archive: %v", err)
+		log.Printf("No real app found — serving a throwaway dummy (won't visibly relaunch on macOS)")
+		dummyBinary, buildErr := buildDummyBinary()
+		if buildErr != nil {
+			log.Printf("WARNING: cannot build dummy binary: %v — serving empty archive", buildErr)
+			dummyBinary = []byte("dummy")
+		}
+		if runtime.GOOS == "linux" {
+			assetData, err = createTarGz("papeer", dummyBinary)
+		} else {
+			assetData, err = createZip(assetName, dummyBinary)
+		}
+		if err != nil {
+			log.Fatalf("create archive: %v", err)
+		}
 	}
 
 	release := githubRelease{
@@ -101,10 +128,10 @@ func main() {
 	log.Printf("  Download: http://localhost:%s%s", port, assetURL)
 	log.Printf("  Tag:      %s (current version must be < %s to trigger update)", release.TagName, release.TagName)
 	log.Println()
-	log.Println("Test steps:")
-	log.Println("  1. PAPEER_UPDATE_API=http://localhost:" + port + " make dev")
-	log.Println("  2. Settings → About → Check for Updates")
-	log.Println("  3. Download → Extract → Restart")
+	log.Println("Tip: use scripts/test-update.sh for the full macOS flow, or set")
+	log.Println("  PAPEER_REAL_APP=/path/to/NewApp.app (outside build/bin) to serve a")
+	log.Println("  real, launchable bundle, then run papeer with")
+	log.Println("  PAPEER_UPDATE_API=http://localhost:" + port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 
@@ -141,6 +168,67 @@ func main() {
 	}
 
 	return os.ReadFile(out)
+}
+
+// zipApp packages a macOS .app bundle into a zip with the bundle name as the
+// top-level prefix (like `ditto -c -k --keepParent`), preserving file modes
+// and symlinks so the extracted app stays launchable.
+func zipApp(appPath string) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	root := filepath.Dir(appPath)
+
+	err := filepath.Walk(appPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+
+		if info.IsDir() {
+			_, err := zw.Create(rel + "/")
+			return err
+		}
+
+		hdr, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		hdr.Name = rel
+		hdr.Method = zip.Deflate
+
+		w, err := zw.CreateHeader(hdr)
+		if err != nil {
+			return err
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			_, err = w.Write([]byte(link))
+			return err
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(w, f)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func createZip(assetName string, binary []byte) ([]byte, error) {

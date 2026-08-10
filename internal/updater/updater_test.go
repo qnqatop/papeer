@@ -55,6 +55,31 @@ func TestVersionCompare(t *testing.T) {
 	}
 }
 
+// ─── Version bump severity (major/minor/patch) ──────────
+
+func TestVersionBump(t *testing.T) {
+	tests := []struct {
+		current string
+		latest  string
+		want    string
+	}{
+		{"v1.2.3", "v2.0.0", "major"},
+		{"v1.9.9", "v2.0.0", "major"},
+		{"v1.2.3", "v1.3.0", "minor"},
+		{"v1.2.3", "v1.2.4", "patch"},
+		{"v1.2.3", "v1.2.3", "none"},  // equal
+		{"v2.0.0", "v1.9.9", "none"},  // older
+		{"1.0.0", "2.0.0", "major"},   // missing v prefix, still parsed
+		{"dev", "v2.0.0", "none"},     // unparseable current
+		{"v1.0.0", "garbage", "none"}, // unparseable latest
+	}
+	for _, tt := range tests {
+		if got := versionBump(tt.current, tt.latest); got != tt.want {
+			t.Errorf("versionBump(%q, %q) = %q, want %q", tt.current, tt.latest, got, tt.want)
+		}
+	}
+}
+
 // ─── 4.2-4.3 GitHub API response parsing ────────────────
 
 func TestCheckForUpdates_Parsing(t *testing.T) {
@@ -598,6 +623,108 @@ func TestFullCycleMock(t *testing.T) {
 	}
 
 	t.Logf("Full cycle OK: binary at %s (%d bytes)", binary, binfo.Size())
+}
+
+// ─── Executable bit preservation on extraction ──────────
+
+func TestExtractPreservesExecBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file modes not meaningful on Windows")
+	}
+
+	// zip with an executable entry.
+	t.Run("zip", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		zipPath := filepath.Join(tmpDir, "exec.zip")
+		f, _ := os.Create(zipPath)
+		zw := zip.NewWriter(f)
+		hdr := &zip.FileHeader{Name: "papeer", Method: zip.Deflate}
+		hdr.SetMode(0o755)
+		w, _ := zw.CreateHeader(hdr)
+		io.WriteString(w, "binary")
+		zw.Close()
+		f.Close()
+
+		u := NewUpdater("v1.0.0")
+		bin, err := u.ExtractArchive(zipPath, filepath.Join(tmpDir, "staging"))
+		if err != nil {
+			t.Fatalf("ExtractArchive: %v", err)
+		}
+		info, _ := os.Stat(bin)
+		if info.Mode()&0o100 == 0 {
+			t.Errorf("extracted zip binary is not executable: mode %v", info.Mode())
+		}
+	})
+
+	// tar.gz with an executable entry.
+	t.Run("tar.gz", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tgzPath := filepath.Join(tmpDir, "exec.tar.gz")
+		f, _ := os.Create(tgzPath)
+		gw := gzip.NewWriter(f)
+		tw := tar.NewWriter(gw)
+		body := []byte("binary")
+		tw.WriteHeader(&tar.Header{Name: "papeer", Size: int64(len(body)), Mode: 0o755})
+		tw.Write(body)
+		tw.Close()
+		gw.Close()
+		f.Close()
+
+		u := NewUpdater("v1.0.0")
+		bin, err := u.ExtractArchive(tgzPath, filepath.Join(tmpDir, "staging"))
+		if err != nil {
+			t.Fatalf("ExtractArchive: %v", err)
+		}
+		info, _ := os.Stat(bin)
+		if info.Mode()&0o100 == 0 {
+			t.Errorf("extracted tar.gz binary is not executable: mode %v", info.Mode())
+		}
+	})
+}
+
+// ─── copyFile (cross-device staging on Linux) ───────────
+
+func TestCopyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "src")
+	dst := filepath.Join(tmpDir, "dst")
+
+	content := []byte("new binary payload")
+	if err := os.WriteFile(src, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyFile(src, dst, 0o755); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("copied content = %q, want %q", got, content)
+	}
+
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("copied mode = %v, want 0755", info.Mode().Perm())
+		}
+	}
+}
+
+func TestPSQuote(t *testing.T) {
+	if got := psQuote(`C:\Program Files\Papeer\papeer.exe`); got != `'C:\Program Files\Papeer\papeer.exe'` {
+		t.Errorf("psQuote plain = %q", got)
+	}
+	// An embedded single quote must be doubled so it cannot break out.
+	if got := psQuote(`C:\o'brien\papeer.exe`); got != `'C:\o''brien\papeer.exe'` {
+		t.Errorf("psQuote with apostrophe = %q", got)
+	}
 }
 
 // ─── Semver helpers ─────────────────────────────────────

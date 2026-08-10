@@ -50,6 +50,13 @@ func (a *App) DownloadUpdate(assetURL string) error {
 		return fmt.Errorf("updater not initialized")
 	}
 
+	// Clean up any staging dir from a previous download attempt so repeated
+	// downloads don't leak temp directories.
+	if prev := a.updater.GetStagingDir(); prev != "" {
+		os.RemoveAll(prev)
+		a.updater.SetStagingDir("")
+	}
+
 	stagingDir, err := os.MkdirTemp("", "papeer-update")
 	if err != nil {
 		return fmt.Errorf("create staging dir: %w", err)
@@ -95,15 +102,17 @@ func (a *App) InstallAndRestart() error {
 // App is the Wails bindings facade.
 // All exported methods are callable from the Vue frontend.
 type App struct {
-	ctx       context.Context
-	db        *db.DB
-	updater   *updater.Updater
-	cancelMu  sync.Mutex         // guards cancel
-	cancel    context.CancelFunc // for cancelling search/download
-	radarStop chan struct{}      // close to stop the radar ticker
-	radarMu   sync.Mutex
-	recMu     sync.Mutex // guards RecalculateAIScores
-	summaryMu sync.Mutex // guards summary generation
+	ctx           context.Context
+	db            *db.DB
+	updater       *updater.Updater
+	cancelMu      sync.Mutex         // guards cancel
+	cancel        context.CancelFunc // for cancelling search/download
+	radarStop     chan struct{}      // close to stop the radar ticker
+	radarMu       sync.Mutex
+	recMu         sync.Mutex // guards RecalculateAIScores
+	summaryMu     sync.Mutex // guards summary generation
+	updateMu      sync.Mutex // guards pendingUpdate
+	pendingUpdate *updater.UpdateInfo
 }
 
 // LLM-related errors.
@@ -213,6 +222,56 @@ func (a *App) Startup(ctx context.Context) {
 	// Notify frontend if any profile lacks a valid contact email — search and
 	// downloads will be blocked until the user updates it.
 	go a.notifyProfilesNeedingEmail()
+
+	// Passively check for a newer release (major/minor only) unless disabled.
+	go a.checkForUpdatesPassive()
+}
+
+// checkForUpdatesPassive runs once on startup: if auto-update checking is
+// enabled, it queries GitHub and, when a newer major/minor release exists that
+// the user hasn't dismissed, emits "update:available" so the UI can show a
+// banner. Patch bumps are intentionally silent (opt-in via the settings panel).
+func (a *App) checkForUpdatesPassive() {
+	// Small delay so the frontend binds its EventsOn handler before we emit.
+	time.Sleep(2 * time.Second)
+
+	if a.updater == nil || a.db == nil {
+		return
+	}
+
+	settings, err := a.db.GetAllSettings()
+	if err != nil {
+		return
+	}
+	if settings["auto_update_check"] == "false" {
+		return
+	}
+
+	info, err := a.updater.CheckForUpdates()
+	if err != nil || info == nil || !info.HasUpdate {
+		return
+	}
+	if info.Severity != "major" && info.Severity != "minor" {
+		return
+	}
+	if settings["update_dismissed_version"] == info.LatestVersion {
+		return
+	}
+
+	a.updateMu.Lock()
+	a.pendingUpdate = info
+	a.updateMu.Unlock()
+
+	runtime.EventsEmit(a.ctx, "update:available", info)
+}
+
+// PendingUpdate returns the update found by the passive startup check, or nil.
+// The frontend calls this on mount to backfill the case where the startup
+// event fired before its listener was ready.
+func (a *App) PendingUpdate() *updater.UpdateInfo {
+	a.updateMu.Lock()
+	defer a.updateMu.Unlock()
+	return a.pendingUpdate
 }
 
 // notifyProfilesNeedingEmail emits a "profile:needs_email" event for each
