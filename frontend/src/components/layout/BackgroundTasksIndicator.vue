@@ -13,7 +13,7 @@
     <n-space vertical :size="8">
       <n-text strong style="font-size: 14px">{{ t('v2.header.backgroundTasks') }}</n-text>
 
-      <template v-if="activeCount === 0">
+      <template v-if="activeCount === 0 && !hasDownloadLog">
         <n-text depth="3" style="font-size: 13px">{{ t('v2.header.noTasks') }}</n-text>
       </template>
 
@@ -37,15 +37,20 @@
           </n-text>
         </div>
 
-        <!-- Download task -->
-        <div v-if="progressStore.downloading" style="padding: 8px 0">
+        <!-- Download task — stays visible after completion so the user can
+             review which papers succeeded/failed. Cleared when a new download
+             starts (the store resets downloadEvents on the first progress event). -->
+        <div v-if="progressStore.downloading || hasDownloadLog" style="padding: 8px 0">
           <n-space justify="space-between" align="center">
-            <n-text style="font-size: 13px">{{ t('sidebar.downloading') }}</n-text>
+            <n-text style="font-size: 13px">
+              {{ progressStore.downloading ? t('sidebar.downloading') : t('v2.header.downloadComplete') }}
+            </n-text>
             <n-text depth="3" style="font-size: 12px">
               {{ progressStore.current }} / {{ progressStore.total }}
             </n-text>
           </n-space>
           <n-progress
+            v-if="progressStore.downloading"
             type="line"
             :percentage="downloadPercent"
             :height="4"
@@ -53,9 +58,8 @@
             :processing="true"
             style="margin-top: 4px"
           />
-          <n-text depth="3" style="font-size: 11px; margin-top: 2px; display: block">
-            {{ progressStore.lastEvent }}
-          </n-text>
+          <!-- Per-paper download log with per-source attempt chips. -->
+          <download-log max-height="240px" style="margin-top: 6px" />
         </div>
 
         <!-- Review draft -->
@@ -100,6 +104,7 @@ import {
 } from 'naive-ui'
 import { SyncOutline } from '@vicons/ionicons5'
 import { useProgressStore } from '../../stores/progress'
+import DownloadLog from '../DownloadLog.vue'
 
 const { t } = useI18n()
 const progressStore = useProgressStore()
@@ -112,6 +117,10 @@ const activeCount = computed(() => {
   if (progressStore.radarRunning) count++
   return count
 })
+
+// Keep the finished download log reachable in the popover after the run ends.
+// downloadEvents are cleared by the store when the next download starts.
+const hasDownloadLog = computed(() => progressStore.downloadEvents.length > 0)
 
 const searchPercent = computed(() => {
   if (progressStore.total === 0) return 0

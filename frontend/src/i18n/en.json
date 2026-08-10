@@ -217,6 +217,7 @@
       "noProfiles": "No research selected",
       "backgroundTasks": "Background tasks",
       "noTasks": "No active tasks",
+      "downloadComplete": "Download complete",
       "draftingReview": "Generating review draft..."
     },
     "welcome": {

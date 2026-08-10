@@ -35,8 +35,8 @@
 
 - [x] 6.1 Remove the `DownloadModal` trigger from the download banner in `PapersView.vue`; replace with direct `DownloadApproved(pid)` call on banner click
 - [x] 6.2 Change banner text from "Download PDF" to show the count and label clearly (e.g., "Download {N} Approved Papers")
-- [ ] 6.3 Enhance `BackgroundTasksIndicator.vue`: add click handler to open a popover with per-paper download log cards (port the log UI from `DownloadModal.vue`)
-- [ ] 6.4 Keep the old `DownloadModal.vue` but remove its blocking modal wrapper; optionally repurpose as the detail popover content for the header indicator
+- [x] 6.3 Enhance `BackgroundTasksIndicator.vue`: add click handler to open a popover with per-paper download log cards (port the log UI from `DownloadModal.vue`) — extracted the per-paper log into a shared `DownloadLog.vue` component and embedded it in the header popover's download section
+- [x] 6.4 Keep the old `DownloadModal.vue` but remove its blocking modal wrapper; optionally repurpose as the detail popover content for the header indicator — `DownloadModal.vue` now delegates to the shared `DownloadLog.vue` (duplicated aggregation logic removed); same log content powers both the modal and the header popover
 - [x] 6.5 Remove the confirmation sub-dialog from the download flow — downloads start immediately on button click
 
 ## 7. i18n

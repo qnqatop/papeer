@@ -217,6 +217,7 @@
       "noProfiles": "Исследование не выбрано",
       "backgroundTasks": "Фоновые задачи",
       "noTasks": "Нет активных задач",
+      "downloadComplete": "Загрузка завершена",
       "draftingReview": "Генерация черновика обзора..."
     },
     "welcome": {
