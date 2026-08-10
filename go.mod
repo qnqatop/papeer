@@ -10,6 +10,7 @@ require (
 	github.com/openai/openai-go/v3 v3.44.0
 	github.com/wailsapp/wails/v2 v2.12.0
 	github.com/zalando/go-keyring v0.2.8
+	golang.org/x/mod v0.38.0
 	golang.org/x/text v0.23.0
 	golang.org/x/time v0.8.0
 	gopkg.in/yaml.v3 v3.0.1
