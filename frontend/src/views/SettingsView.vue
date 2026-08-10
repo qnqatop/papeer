@@ -299,6 +299,73 @@
             <n-text depth="3" style="font-size: 11px; margin-top: 8px">
               {{ t('v2.settings.about.copyright') }}
             </n-text>
+
+            <n-divider style="margin: 12px 0" />
+
+            <n-h4 id="updates" style="margin: 0 0 8px 0">{{ t('updates.section') }}</n-h4>
+            <n-space vertical :size="8">
+              <n-text depth="3" style="font-size: 13px">
+                {{ t('updates.check') }}: <n-text strong>{{ appVersion || 'dev' }}</n-text>
+                <template v-if="updateStatus === 'up-to-date'">
+                  — {{ t('updates.upToDate') }}
+                </template>
+                <template v-else-if="updateStatus === 'available'">
+                  — {{ t('updates.updateAvailable', { version: latestVersion }) }}
+                </template>
+              </n-text>
+
+              <n-space :size="8">
+                <n-button
+                  :loading="checkingUpdate"
+                  :disabled="isDownloading"
+                  @click="checkUpdates"
+                >
+                  {{ checkingUpdate ? t('updates.checking') : t('updates.check') }}
+                </n-button>
+                <n-button
+                  v-if="updateStatus === 'available' && !isUpdateReady"
+                  type="primary"
+                  :disabled="isDownloading"
+                  :loading="isDownloading"
+                  @click="downloadUpdate"
+                >
+                  {{ isDownloading ? t('updates.downloading') : t('updates.download') }}
+                </n-button>
+                <n-button
+                  v-if="isUpdateReady"
+                  type="success"
+                  @click="installUpdate"
+                >
+                  {{ t('updates.restart') }}
+                </n-button>
+              </n-space>
+
+              <n-progress
+                v-if="isDownloading"
+                type="line"
+                :percentage="downloadPercentage"
+                :indicator-placement="'inside'"
+                status="success"
+              />
+
+              <n-text v-if="updateError" type="error" style="font-size: 12px">
+                {{ updateError }}
+              </n-text>
+              <n-text v-if="updateStatus === 'restarting'" style="font-size: 13px">
+                {{ t('updates.restarting') }}
+              </n-text>
+
+              <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px">
+                <n-switch
+                  :value="autoUpdateCheck"
+                  @update:value="toggleAutoUpdateCheck"
+                  size="small"
+                />
+                <n-text depth="3" style="font-size: 13px">
+                  {{ t('updates.autoCheck') }}
+                </n-text>
+              </div>
+            </n-space>
           </n-space>
         </template>
       </div>
@@ -312,8 +379,8 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   NCard, NSpace, NButton, NIcon, NSelect, NText, NInput,
-  NTag, NSwitch, NPopconfirm, NPopover, NMenu, NH3, NEmpty,
-  NDivider,
+  NTag, NSwitch, NPopconfirm, NPopover, NMenu, NH3, NH4, NEmpty,
+  NDivider, NProgress,
   useMessage,
 } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
@@ -333,6 +400,7 @@ import {
 import { app, db } from '../../wailsjs/go/models'
 import ProfileFormModal from '../components/ProfileFormModal.vue'
 import LLMProfileFormModal from '../components/LLMProfileFormModal.vue'
+import { useUpdater } from '../composables/useUpdater'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -415,6 +483,8 @@ async function loadSettings() {
     const settings = await GetSettings()
     proxyURL.value = settings['proxy_url'] || ''
     s2ApiKey.value = settings['semantic_scholar_api_key'] || ''
+    // Absent = enabled by default.
+    autoUpdateCheck.value = settings['auto_update_check'] !== 'false'
   } catch { /* ignore */ }
 }
 
@@ -656,6 +726,55 @@ function resetPrompt() {
 
 const appVersion = ref('')
 
+const {
+  updateStatus,
+  latestVersion,
+  checkingUpdate,
+  isDownloading,
+  downloadPercentage,
+  isUpdateReady,
+  updateError,
+  checkUpdates: runCheckUpdates,
+  downloadUpdate: runDownloadUpdate,
+  installUpdate: runInstallUpdate,
+} = useUpdater()
+
+async function checkUpdates() {
+  try {
+    await runCheckUpdates()
+    if (updateStatus.value === 'available') {
+      message.info(t('updates.updateAvailable', { version: latestVersion.value }))
+    } else if (updateStatus.value === 'up-to-date') {
+      message.success(t('updates.upToDate'))
+    }
+  } catch (e: any) {
+    updateError.value = t('updates.checkFailed', { error: e?.message || String(e) })
+  }
+}
+
+async function downloadUpdate() {
+  try {
+    await runDownloadUpdate()
+  } catch (e: any) {
+    updateError.value = t('updates.downloadFailed', { error: e?.message || String(e) })
+  }
+}
+
+function installUpdate() {
+  runInstallUpdate().catch((e: any) => {
+    updateError.value = t('updates.installFailed', { error: e?.message || String(e) })
+  })
+}
+
+const autoUpdateCheck = ref(true)
+
+async function toggleAutoUpdateCheck(value: boolean) {
+  autoUpdateCheck.value = value
+  try {
+    await SaveSetting('auto_update_check', value ? 'true' : 'false')
+  } catch { /* ignore */ }
+}
+
 onMounted(() => {
   loadSettings()
   loadRadarSettings()
@@ -663,6 +782,13 @@ onMounted(() => {
   llmStore.fetch()
   fetchTags()
   AppVersion().then((v) => { appVersion.value = v }).catch(() => {})
+
+  // Arrived from the update banner ("Обновить") — open the About section and
+  // auto-run the check so the download button is ready without an extra click.
+  if (router.currentRoute.value.hash === '#updates') {
+    activeSection.value = 'about'
+    checkUpdates()
+  }
 })
 
 watch(() => profileStore.activeProfileId, () => { fetchTags() })
