@@ -69,6 +69,9 @@ func (d *DB) migrate() error {
 	// Add columns that may not exist in older databases.
 	// Ignore "duplicate column" errors.
 	d.Exec("ALTER TABLE axes ADD COLUMN last_radar_run DATETIME")
+	// lang_scope restricts an axis to same-language search providers. Older axes
+	// (all English-language sources) default to 'en', preserving their behavior.
+	d.Exec("ALTER TABLE axes ADD COLUMN lang_scope TEXT NOT NULL DEFAULT 'en'")
 	d.Exec("ALTER TABLE papers ADD COLUMN ai_match_score INTEGER DEFAULT 0;")
 	d.Exec("ALTER TABLE papers ADD COLUMN s2_paper_id TEXT;")
 	// last_citation_fetch_at marks when a paper was last processed by the

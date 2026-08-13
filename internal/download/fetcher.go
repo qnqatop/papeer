@@ -146,8 +146,16 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	// acquisition). Old upstream APIs still hand out the legacy host.
 	rawURL = rewriteDeadURL(rawURL)
 
+	// Compute a per-host Referer. CyberLeninka serves a captcha instead of the
+	// PDF unless the request carries a Referer pointing at the article page (the
+	// PDF URL without its trailing /pdf). All downloads in this call reuse it.
+	referer := refererForURL(rawURL)
+	download := func(u string) ([]byte, string, error) {
+		return client.DownloadFileWithReferer(ctx, u, referer)
+	}
+
 	// Step 1: download the URL.
-	data, _, err := client.DownloadFile(ctx, rawURL)
+	data, _, err := download(rawURL)
 	if err != nil {
 		// HTTP-level block (403 from ACM/IEEE/Elsevier after all UA strategies,
 		// 4xx/5xx with no body, network reset). DownloadFile gives us nothing
@@ -191,7 +199,7 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 		case <-time.After(500 * time.Millisecond):
 		}
 		// Re-fetch with the fresh ak_bmsc cookie in the jar.
-		data, _, err = client.DownloadFile(ctx, rawURL)
+		data, _, err = download(rawURL)
 		if err != nil {
 			return fmt.Errorf("downloading after Akamai bypass %s: %w", rawURL, err)
 		}
@@ -201,7 +209,7 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	if looksLikeHTML(data) {
 		pdfURL := ExtractPDFFromHTML(string(data), rawURL)
 		if pdfURL != "" && pdfURL != rawURL {
-			data2, _, err := client.DownloadFile(ctx, pdfURL)
+			data2, _, err := download(pdfURL)
 			if err == nil {
 				data = data2
 			}
@@ -218,7 +226,7 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 				return ctx.Err()
 			case <-time.After(wait):
 			}
-			next, _, err := client.DownloadFile(ctx, rawURL)
+			next, _, err := download(rawURL)
 			if err != nil {
 				break
 			}
@@ -254,6 +262,21 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	}
 
 	return nil
+}
+
+// refererForURL returns the Referer to send when downloading rawURL, or "" when
+// no special Referer is needed. CyberLeninka gates its PDF endpoint behind a
+// Referer pointing at the article page — the same URL without the trailing
+// "/pdf" — otherwise it answers with a captcha/HTML.
+func refererForURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	if u.Host != "cyberleninka.ru" {
+		return ""
+	}
+	return strings.TrimSuffix(rawURL, "/pdf")
 }
 
 // isPDFEndpoint reports whether the URL is most likely the publisher's PDF

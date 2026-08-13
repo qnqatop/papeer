@@ -108,6 +108,34 @@ func TestNewDB_Idempotent_NewColumnsAndTables(t *testing.T) {
 	}
 }
 
+// TestAxis_LangScope_DefaultsToEn checks that a row inserted without an
+// explicit lang_scope (as legacy databases would have it after the migration
+// adds the column) reads back as the English default via GetAxis.
+func TestAxis_LangScope_DefaultsToEn(t *testing.T) {
+	d := testDB(t)
+
+	p := &Profile{Name: "test", Email: "t@t.com"}
+	if err := d.CreateProfile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert bypassing SaveAxis so lang_scope is left to the column DEFAULT.
+	res, err := d.Exec(`INSERT INTO axes (profile_id, axis_key, description, position) VALUES (?,?,?,?)`,
+		p.ID, "legacy", "", 0)
+	if err != nil {
+		t.Fatalf("insert axis: %v", err)
+	}
+	id, _ := res.LastInsertId()
+
+	axis, err := d.GetAxis(id)
+	if err != nil {
+		t.Fatalf("GetAxis: %v", err)
+	}
+	if axis.LangScope != "en" {
+		t.Errorf("LangScope = %q, want %q", axis.LangScope, "en")
+	}
+}
+
 func TestSummaries_TableConstraints(t *testing.T) {
 	d := testDB(t)
 

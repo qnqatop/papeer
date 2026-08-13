@@ -113,6 +113,47 @@ func TestDownloadFile_UARotation(t *testing.T) {
 	}
 }
 
+func TestDownloadFileWithReferer_SetsRefererOnFirstAttempt(t *testing.T) {
+	var gotReferer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReferer = r.Header.Get("Referer")
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write([]byte("%PDF-1.4 ok"))
+	}))
+	defer srv.Close()
+
+	c := New("test@example.com")
+	referer := "https://cyberleninka.ru/article/n/slug"
+	if _, _, err := c.DownloadFileWithReferer(context.Background(), srv.URL+"/article/n/slug/pdf", referer); err != nil {
+		t.Fatalf("DownloadFileWithReferer: %v", err)
+	}
+	// The explicit referer must be present on the very first (polite) attempt,
+	// not only the UA-rotation retries.
+	if gotReferer != referer {
+		t.Errorf("Referer = %q, want %q", gotReferer, referer)
+	}
+}
+
+func TestDownloadFile_NoRefererOnFirstAttempt(t *testing.T) {
+	// Regression guard: plain DownloadFile keeps its old behavior — no Referer
+	// on the first attempt.
+	var gotReferer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReferer = r.Header.Get("Referer")
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write([]byte("%PDF-1.4 ok"))
+	}))
+	defer srv.Close()
+
+	c := New("test@example.com")
+	if _, _, err := c.DownloadFile(context.Background(), srv.URL+"/paper.pdf"); err != nil {
+		t.Fatalf("DownloadFile: %v", err)
+	}
+	if gotReferer != "" {
+		t.Errorf("Referer = %q, want empty on first attempt", gotReferer)
+	}
+}
+
 func TestPoliteUA(t *testing.T) {
 	ua := PoliteUA("user@example.com")
 	if ua != "papeer/1.0 (academic research; mailto:user@example.com)" {

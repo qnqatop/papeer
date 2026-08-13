@@ -6,7 +6,7 @@ import (
 )
 
 func (d *DB) ListAxes(profileID int64) ([]Axis, error) {
-	rows, err := d.Query(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position FROM axes WHERE profile_id=? ORDER BY position, id`, profileID)
+	rows, err := d.Query(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position, lang_scope FROM axes WHERE profile_id=? ORDER BY position, id`, profileID)
 	if err != nil {
 		return nil, err
 	}
@@ -15,7 +15,7 @@ func (d *DB) ListAxes(profileID int64) ([]Axis, error) {
 	var out []Axis
 	for rows.Next() {
 		var a Axis
-		if err := rows.Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position); err != nil {
+		if err := rows.Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position, &a.LangScope); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -40,8 +40,8 @@ func (d *DB) ListAxes(profileID int64) ([]Axis, error) {
 
 func (d *DB) GetAxis(id int64) (*Axis, error) {
 	var a Axis
-	err := d.QueryRow(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position FROM axes WHERE id=?`, id).
-		Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position)
+	err := d.QueryRow(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position, lang_scope FROM axes WHERE id=?`, id).
+		Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position, &a.LangScope)
 	if err != nil {
 		return nil, err
 	}
@@ -66,18 +66,24 @@ func (d *DB) SaveAxis(a *Axis) error {
 	}
 	defer tx.Rollback()
 
+	// Normalize lang_scope so the column's NOT NULL invariant holds and empty
+	// (unset by older callers/UI) maps to the English default.
+	if a.LangScope == "" {
+		a.LangScope = "en"
+	}
+
 	if a.ID == 0 {
 		// Insert new axis.
-		res, err := tx.Exec(`INSERT INTO axes (profile_id, axis_key, description, year_min, max_per_query, position) VALUES (?,?,?,?,?,?)`,
-			a.ProfileID, a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position)
+		res, err := tx.Exec(`INSERT INTO axes (profile_id, axis_key, description, year_min, max_per_query, position, lang_scope) VALUES (?,?,?,?,?,?,?)`,
+			a.ProfileID, a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position, a.LangScope)
 		if err != nil {
 			return fmt.Errorf("insert axis: %w", err)
 		}
 		a.ID, _ = res.LastInsertId()
 	} else {
 		// Update existing axis.
-		_, err := tx.Exec(`UPDATE axes SET axis_key=?, description=?, year_min=?, max_per_query=?, position=? WHERE id=?`,
-			a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position, a.ID)
+		_, err := tx.Exec(`UPDATE axes SET axis_key=?, description=?, year_min=?, max_per_query=?, position=?, lang_scope=? WHERE id=?`,
+			a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position, a.LangScope, a.ID)
 		if err != nil {
 			return fmt.Errorf("update axis: %w", err)
 		}

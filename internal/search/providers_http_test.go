@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -323,5 +324,118 @@ func TestArXivSearch_MalformedXMLReturnsError(t *testing.T) {
 	_, err := a.Search(context.Background(), "q", 1, 2020)
 	if err == nil {
 		t.Error("expected XML parse error")
+	}
+}
+
+// ─── CyberLeninka ─────────────────────────────────────────────────────────
+
+func TestCyberLeninkaSearch_HappyPath(t *testing.T) {
+	var gotMethod string
+	var gotBody clRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"found": 1,
+			"articles": [{
+				"name": "Рекомендательная <b>система</b> для абитуриентов",
+				"annotation": "Аннотация со <b>ссылкой</b>",
+				"journal": "Вестник <b>вуза</b>",
+				"year": "2019",
+				"authors": ["Иванов И.И.", "Петров П.П."],
+				"link": "/article/n/rekomendatelnaya-sistema"
+			}]
+		}`))
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL, email: "real@univ.edu"}
+	papers, err := cl.Search(context.Background(), "рекомендательная система абитуриент", 10, 2015)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// Request must be a POST carrying the documented JSON body.
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotBody.Mode != "articles" || gotBody.Q != "рекомендательная система абитуриент" || gotBody.Size != 10 || gotBody.From != 0 {
+		t.Errorf("request body = %+v", gotBody)
+	}
+
+	if len(papers) != 1 {
+		t.Fatalf("len(papers) = %d", len(papers))
+	}
+	p := papers[0]
+	if p.Title != "Рекомендательная система для абитуриентов" {
+		t.Errorf("Title not stripped of <b>: %q", p.Title)
+	}
+	if p.Abstract != "Аннотация со ссылкой" {
+		t.Errorf("Abstract = %q", p.Abstract)
+	}
+	if p.Venue != "Вестник вуза" {
+		t.Errorf("Venue = %q", p.Venue)
+	}
+	if p.Year == nil || *p.Year != 2019 {
+		t.Errorf("Year = %v (want 2019 from string)", p.Year)
+	}
+	if len(p.Authors) != 2 {
+		t.Errorf("Authors = %v", p.Authors)
+	}
+	if p.DOI != "" {
+		t.Errorf("DOI = %q, want empty (CyberLeninka has no DOI)", p.DOI)
+	}
+	if p.PdfURL != "https://cyberleninka.ru/article/n/rekomendatelnaya-sistema/pdf" {
+		t.Errorf("PdfURL = %q", p.PdfURL)
+	}
+	if p.Source != "cyberleninka" {
+		t.Errorf("Source = %q", p.Source)
+	}
+}
+
+func TestCyberLeninkaSearch_CapsSizeAt100(t *testing.T) {
+	var gotSize int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body clRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotSize = body.Size
+		_, _ = w.Write([]byte(`{"found": 0, "articles": []}`))
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	if _, err := cl.Search(context.Background(), "q", 500, 0); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotSize != 100 {
+		t.Errorf("size = %d, want capped at 100", gotSize)
+	}
+}
+
+func TestCyberLeninkaSearch_YearMinFilter(t *testing.T) {
+	srv := httptest.NewServer(jsonHandler(`{
+		"found": 3,
+		"articles": [
+			{"name": "Old", "year": "2010", "link": "/a/old"},
+			{"name": "New", "year": 2022, "link": "/a/new"},
+			{"name": "NoYear", "link": "/a/noyear"}
+		]
+	}`))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	papers, err := cl.Search(context.Background(), "q", 10, 2015)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Old (2010) dropped; New (2022) kept; NoYear kept (unknown year not filtered).
+	if len(papers) != 2 {
+		t.Fatalf("len(papers) = %d, want 2 (Old filtered out)", len(papers))
+	}
+	for _, p := range papers {
+		if p.Title == "Old" {
+			t.Errorf("2010 paper should have been filtered by yearMin=2015")
+		}
 	}
 }

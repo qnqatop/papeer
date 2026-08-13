@@ -19,6 +19,7 @@ type yamlAxis struct {
 	Description   string   `yaml:"description"`
 	YearMin       int      `yaml:"year_min"`
 	MaxPerQuery   int      `yaml:"max_per_query"`
+	LangScope     string   `yaml:"lang_scope,omitempty"` // "en" (default) or "ru"
 	Queries       []string `yaml:"queries"`
 	KeywordsMust  []string `yaml:"keywords_must"`
 	KeywordsBoost []string `yaml:"keywords_boost"`
@@ -51,6 +52,7 @@ func ImportAxesFromYAML(r io.Reader, profileID int64) ([]db.Axis, error) {
 			AxisKey:     key,
 			Description: ya.Description,
 			Position:    pos,
+			LangScope:   ya.LangScope, // empty → normalized to "en" by SaveAxis
 		}
 		if ya.YearMin != 0 {
 			a.YearMin = ptr.Ptr(ya.YearMin)
@@ -107,6 +109,10 @@ func ExportAxisToYAML(axis *db.Axis) ([]byte, error) {
 
 func axisToYAML(axis *db.Axis) yamlAxis {
 	ya := yamlAxis{Description: axis.Description}
+	// Only emit lang_scope for non-default (ru) axes to keep English exports clean.
+	if axis.LangScope != "" && axis.LangScope != "en" {
+		ya.LangScope = axis.LangScope
+	}
 	if axis.YearMin != nil {
 		ya.YearMin = *axis.YearMin
 	}

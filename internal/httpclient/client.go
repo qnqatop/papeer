@@ -266,6 +266,22 @@ func (c *Client) PostJSON(ctx context.Context, rawURL string, body []byte, extra
 // DownloadFile downloads a URL with UA rotation strategy (3 attempts on 403).
 // Returns response body, content-type, and error.
 func (c *Client) DownloadFile(ctx context.Context, rawURL string) ([]byte, string, error) {
+	return c.downloadFile(ctx, rawURL, "")
+}
+
+// DownloadFileWithReferer is like DownloadFile but sends the given Referer on
+// every attempt. Some hosts (e.g. CyberLeninka) serve a captcha/HTML instead of
+// the PDF unless the request carries a Referer pointing at the article page —
+// the default per-host Referer used on retries is not enough. An empty referer
+// falls back to the standard DownloadFile behavior.
+func (c *Client) DownloadFileWithReferer(ctx context.Context, rawURL, referer string) ([]byte, string, error) {
+	return c.downloadFile(ctx, rawURL, referer)
+}
+
+// downloadFile is the shared implementation. When referer is non-empty it is
+// applied to all attempts; otherwise the polite first attempt sends no Referer
+// and the UA-rotation retries fall back to "https://<host>/".
+func (c *Client) downloadFile(ctx context.Context, rawURL, referer string) ([]byte, string, error) {
 	type uaStrategy struct {
 		ua      string
 		referer string
@@ -276,6 +292,12 @@ func (c *Client) DownloadFile(ctx context.Context, rawURL string) ([]byte, strin
 		{ua: PoliteUA(c.email)},
 		{ua: UAFirefox, referer: fmt.Sprintf("https://%s/", host)},
 		{ua: UAChrome, referer: fmt.Sprintf("https://%s/", host)},
+	}
+	// An explicit referer overrides the default on every attempt.
+	if referer != "" {
+		for i := range strategies {
+			strategies[i].referer = referer
+		}
 	}
 
 	var lastErr error

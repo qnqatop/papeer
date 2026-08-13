@@ -35,6 +35,6 @@ type Source interface {
 // DefaultSourceOrder defines the fallback chain order across open sources.
 // search_report → arxiv → s2_doi → openalex → unpaywall → crossref → s2_title
 var DefaultSourceOrder = []string{
-	"search_report", "arxiv", "s2_doi", "openalex",
+	"search_report", "cyberleninka", "arxiv", "s2_doi", "openalex",
 	"unpaywall", "crossref", "s2_title",
 }

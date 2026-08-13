@@ -60,6 +60,7 @@ type Axis struct {
 	YearMin     *int   `json:"year_min"`      // nil = inherit from profile
 	MaxPerQuery *int   `json:"max_per_query"` // nil = inherit from profile
 	Position    int    `json:"position"`
+	LangScope   string `json:"lang_scope"` // "en" (default) or "ru" — which language sources search this axis
 
 	// Loaded via joins, not stored directly in axes table.
 	Queries  []Query   `json:"queries"`

@@ -113,8 +113,8 @@ type App struct {
 	summaryMu     sync.Mutex // guards summary generation
 	updateMu      sync.Mutex // guards pendingUpdate
 	pendingUpdate *updater.UpdateInfo
-	dlPaperMu  sync.Mutex
-	dlPaperSet map[int64]bool // guards against duplicate single-paper downloads
+	dlPaperMu     sync.Mutex
+	dlPaperSet    map[int64]bool // guards against duplicate single-paper downloads
 }
 
 // LLM-related errors.
@@ -427,6 +427,7 @@ func (a *App) CheckSearchProviders() ([]ProviderStatus, error) {
 		{"openalex", "https://api.openalex.org/works?per-page=1", true},
 		{"crossref", "https://api.crossref.org/works?rows=1", true},
 		{"arxiv", "http://export.arxiv.org/api/query?search_query=test&max_results=1", false},
+		{"cyberleninka", "https://cyberleninka.ru", false},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -665,6 +666,7 @@ func (a *App) SearchAxis(profileID int64, axisID int64) (int, error) {
 		search.NewOpenAlex(client, profile.Email),
 		search.NewCrossref(client),
 		search.NewArXiv(client),
+		search.NewCyberLeninka(client, profile.Email),
 	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
@@ -868,6 +870,7 @@ func buildDownloadSources(profile *db.Profile) []download.Source {
 
 	allSources := map[string]download.Source{
 		"search_report": dlsources.NewSearchReport(),
+		"cyberleninka":  dlsources.NewCyberLeninka(),
 		"arxiv":         dlsources.NewArXiv(),
 		"s2_doi":        dlsources.NewS2ByDOI(),
 		"openalex":      dlsources.NewOpenAlex(),
@@ -914,6 +917,11 @@ func (a *App) makeHTTPClient(email string) (*httpclient.Client, error) {
 		// was configured — the exact bug the batch citation fetch fixes.
 		client.SetHostRateLimit("api.semanticscholar.org", 1)
 	}
+
+	// CyberLeninka is an undocumented public endpoint; stay polite (~1 request
+	// per 2s) to avoid tripping its captcha/rate limiting, matching the
+	// dissertation harvester's cadence.
+	client.SetHostRateLimit("cyberleninka.ru", 0.5)
 
 	return client, nil
 }
@@ -974,6 +982,7 @@ func (a *App) RunRadar(profileID int64) (int, error) {
 		search.NewOpenAlex(client, profile.Email),
 		search.NewCrossref(client),
 		search.NewArXiv(client),
+		search.NewCyberLeninka(client, profile.Email),
 	}
 
 	radarLimit := 3

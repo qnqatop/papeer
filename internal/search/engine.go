@@ -75,6 +75,14 @@ type SearchAxisInput struct {
 func (e *Engine) SearchAxis(ctx context.Context, input SearchAxisInput) (int, error) {
 	var allRaw []RawPaper
 
+	// Language scope decides which providers run for this axis: "en" (default,
+	// including legacy axes with no stored value) uses English sources, "ru"
+	// uses Russian ones. Read straight off the axis — no separate input field.
+	scope := input.Axis.LangScope
+	if scope == "" {
+		scope = "en"
+	}
+
 	for _, query := range input.Queries {
 		e.onEvent(SearchEvent{
 			Type:  "query_start",
@@ -83,7 +91,7 @@ func (e *Engine) SearchAxis(ctx context.Context, input SearchAxisInput) (int, er
 		})
 
 		qStart := time.Now()
-		results, newSkips := e.searchQueryParallel(ctx, query, input.MaxPerQuery, input.YearMin, input.Axis.AxisKey, e.skipProviders)
+		results, newSkips := e.searchQueryParallel(ctx, query, input.MaxPerQuery, input.YearMin, input.Axis.AxisKey, scope, e.skipProviders)
 		for name, reason := range newSkips {
 			if !e.skipProviders[name] {
 				e.skipProviders[name] = true
@@ -156,7 +164,7 @@ func (e *Engine) SearchAxis(ctx context.Context, input SearchAxisInput) (int, er
 // searchQueryParallel runs all providers in parallel for a single query.
 // skipProviders lists providers to skip (circuit breaker).
 // Returns results and a map of newly tripped providers → human-readable reason.
-func (e *Engine) searchQueryParallel(ctx context.Context, query string, limit, yearMin int, axisName string, skipProviders map[string]bool) ([]RawPaper, map[string]string) {
+func (e *Engine) searchQueryParallel(ctx context.Context, query string, limit, yearMin int, axisName, langScope string, skipProviders map[string]bool) ([]RawPaper, map[string]string) {
 	type result struct {
 		papers     []RawPaper
 		err        error
@@ -164,12 +172,17 @@ func (e *Engine) searchQueryParallel(ctx context.Context, query string, limit, y
 		durationMs int64
 	}
 
-	// Filter out skipped providers.
+	// Filter out skipped providers and providers whose language does not match
+	// the axis scope.
 	var active []Provider
 	for _, p := range e.providers {
-		if !skipProviders[p.Name()] {
-			active = append(active, p)
+		if skipProviders[p.Name()] {
+			continue
 		}
+		if p.Language() != langScope {
+			continue
+		}
+		active = append(active, p)
 	}
 
 	ch := make(chan result, len(active))
@@ -209,15 +222,21 @@ func (e *Engine) searchQueryParallel(ctx context.Context, query string, limit, y
 			}
 			continue
 		}
+		// Keep only papers whose actual language matches the axis scope. The
+		// provider filter already restricts sources, but a source can still
+		// return off-language records (e.g. CyberLeninka indexes some
+		// non-Russian articles) — drop those here so the count reported to the
+		// UI reflects what actually lands.
+		papers := filterByLangScope(r.papers, langScope)
 		e.onEvent(SearchEvent{
 			Type:       "provider_done",
 			Axis:       axisName,
 			Query:      query,
 			Provider:   r.name,
-			Count:      len(r.papers),
+			Count:      len(papers),
 			DurationMs: r.durationMs,
 		})
-		all = append(all, r.papers...)
+		all = append(all, papers...)
 	}
 
 	return all, newSkips

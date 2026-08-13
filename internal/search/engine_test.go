@@ -14,11 +14,18 @@ import (
 // mockProvider returns pre-defined papers.
 type mockProvider struct {
 	name   string
+	lang   string
 	papers []RawPaper
 	err    error
 }
 
 func (m *mockProvider) Name() string { return m.name }
+func (m *mockProvider) Language() string {
+	if m.lang == "" {
+		return "en"
+	}
+	return m.lang
+}
 func (m *mockProvider) Search(_ context.Context, _ string, _ int, _ int) ([]RawPaper, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -229,6 +236,147 @@ func TestEngine_ProviderError(t *testing.T) {
 	defer mu.Unlock()
 	if len(errorEvents) != 1 {
 		t.Errorf("error events = %d, want 1", len(errorEvents))
+	}
+}
+
+// langScopeProviders returns one English and one Russian mock provider, each
+// tagging its single paper's Source so we can tell which one ran.
+func langScopeProviders() []Provider {
+	return []Provider{
+		&mockProvider{
+			name: "semantic_scholar",
+			lang: "en",
+			papers: []RawPaper{
+				{Title: "English Recommender Paper", Abstract: "English content about recommenders", Source: "semantic_scholar"},
+			},
+		},
+		&mockProvider{
+			name: "cyberleninka",
+			lang: "ru",
+			papers: []RawPaper{
+				{Title: "Рекомендательная система для абитуриентов", Abstract: "Русскоязычная статья про рекомендательные системы", Source: "cyberleninka"},
+			},
+		},
+	}
+}
+
+func runScopedAxis(t *testing.T, scope string) []db.Paper {
+	t.Helper()
+	d := testSearchDB(t)
+	profileID := createTestSearchProfile(t, d)
+
+	axis := &db.Axis{
+		ProfileID: profileID,
+		AxisKey:   "scoped",
+		Queries:   []db.Query{{Text: "recommender"}},
+		LangScope: scope,
+	}
+	if err := d.SaveAxis(axis); err != nil {
+		t.Fatal(err)
+	}
+
+	// SaveAxis normalizes an empty scope to "en"; feed the raw scope to the
+	// engine so the empty-scope default is exercised at the engine level.
+	axisInput := *axis
+	axisInput.LangScope = scope
+
+	engine := NewEngine(d, langScopeProviders(), nil)
+	if _, err := engine.SearchAxis(context.Background(), SearchAxisInput{
+		ProfileID:   profileID,
+		Axis:        axisInput,
+		Queries:     []string{"recommender"},
+		MaxPerQuery: 25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	papers, _, err := d.ListPapers(db.PaperFilter{ProfileID: profileID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return papers
+}
+
+func TestEngine_LangScope_RuUsesOnlyRussianProviders(t *testing.T) {
+	papers := runScopedAxis(t, "ru")
+	if len(papers) != 1 {
+		t.Fatalf("len(papers) = %d, want 1", len(papers))
+	}
+	if papers[0].PdfSource == nil || *papers[0].PdfSource != "cyberleninka" {
+		t.Errorf("source = %v, want cyberleninka only", papers[0].PdfSource)
+	}
+}
+
+func TestEngine_LangScope_EnUsesOnlyEnglishProviders(t *testing.T) {
+	papers := runScopedAxis(t, "en")
+	if len(papers) != 1 {
+		t.Fatalf("len(papers) = %d, want 1", len(papers))
+	}
+	if papers[0].PdfSource == nil || *papers[0].PdfSource != "semantic_scholar" {
+		t.Errorf("source = %v, want semantic_scholar only", papers[0].PdfSource)
+	}
+}
+
+func TestEngine_LangScope_EmptyDefaultsToEnglish(t *testing.T) {
+	// A legacy axis with no stored lang_scope must behave as English-only.
+	papers := runScopedAxis(t, "")
+	if len(papers) != 1 {
+		t.Fatalf("len(papers) = %d, want 1", len(papers))
+	}
+	if papers[0].PdfSource == nil || *papers[0].PdfSource != "semantic_scholar" {
+		t.Errorf("source = %v, want semantic_scholar (English default)", papers[0].PdfSource)
+	}
+}
+
+func TestEngine_LangScope_FiltersOffLanguageArticles(t *testing.T) {
+	d := testSearchDB(t)
+	profileID := createTestSearchProfile(t, d)
+
+	axis := &db.Axis{
+		ProfileID: profileID,
+		AxisKey:   "mixed",
+		Queries:   []db.Query{{Text: "рекомендации"}},
+		LangScope: "ru",
+	}
+	if err := d.SaveAxis(axis); err != nil {
+		t.Fatal(err)
+	}
+
+	// A ru-scoped source returns a mixed batch: two Russian articles and one
+	// English one that slipped through. Only the Russian ones must survive.
+	providers := []Provider{
+		&mockProvider{
+			name: "cyberleninka",
+			lang: "ru",
+			papers: []RawPaper{
+				{Title: "Рекомендательная система для абитуриентов", Abstract: "Про рекомендации", Source: "cyberleninka"},
+				{Title: "Deep Learning for Recommendations", Abstract: "An English article", Source: "cyberleninka"},
+				{Title: "Гибридные методы рекомендаций", Abstract: "Ещё одна русская статья", Source: "cyberleninka"},
+			},
+		},
+	}
+
+	engine := NewEngine(d, providers, nil)
+	if _, err := engine.SearchAxis(context.Background(), SearchAxisInput{
+		ProfileID:   profileID,
+		Axis:        *axis,
+		Queries:     []string{"рекомендации"},
+		MaxPerQuery: 25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	papers, total, err := d.ListPapers(db.PaperFilter{ProfileID: profileID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (English article filtered out)", total)
+	}
+	for _, p := range papers {
+		if p.Title == "Deep Learning for Recommendations" {
+			t.Error("English article should have been filtered out of a ru-scoped axis")
+		}
 	}
 }
 
