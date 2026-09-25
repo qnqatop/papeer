@@ -905,6 +905,10 @@ func (a *App) makeHTTPClient(email string) (*httpclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// URLs come from remote API responses: refuse loopback/private/metadata
+	// destinations. Headless Chrome uses the same proxy as the Go client.
+	client.EnableSSRFGuard()
+	download.SetChromeProxy(proxyURL)
 
 	if s2Key, _ := a.db.GetSetting("semantic_scholar_api_key"); s2Key != "" {
 		client.SetHostHeader("api.semanticscholar.org", "x-api-key", s2Key)
