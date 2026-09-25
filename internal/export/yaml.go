@@ -1,8 +1,10 @@
 package export
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/qnqatop/papeer/internal/db"
 	"github.com/qnqatop/papeer/internal/ptr"
@@ -10,26 +12,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// MaxYAMLImportSize caps the size of an axes YAML file accepted for import.
+const MaxYAMLImportSize = 5 << 20 // 5 MiB
+
+// ErrYAMLTooLarge is returned when an import file exceeds MaxYAMLImportSize.
+var ErrYAMLTooLarge = fmt.Errorf("yaml file is larger than %d MiB", MaxYAMLImportSize>>20)
+
 type yamlFile struct {
 	Axes   map[string]yamlAxis `yaml:"axes,omitempty"`
 	Topics map[string]yamlAxis `yaml:"topics,omitempty"`
 }
 
 type yamlAxis struct {
-	Description   string   `yaml:"description"`
-	YearMin       int      `yaml:"year_min"`
-	MaxPerQuery   int      `yaml:"max_per_query"`
-	Queries       []string `yaml:"queries"`
-	KeywordsMust  []string `yaml:"keywords_must"`
-	KeywordsBoost []string `yaml:"keywords_boost"`
+	Description     string   `yaml:"description"`
+	YearMin         int      `yaml:"year_min"`
+	MaxPerQuery     int      `yaml:"max_per_query"`
+	Queries         []string `yaml:"queries"`
+	KeywordsMust    []string `yaml:"keywords_must"`
+	KeywordsBoost   []string `yaml:"keywords_boost"`
+	KeywordsExclude []string `yaml:"keywords_exclude,omitempty"`
 }
 
 // ImportAxesFromYAML reads a YAML file with axes/queries/keywords config
 // and returns db.Axis slices ready for SaveAxis.
 // Supports both "axes" (legacy) and "topics" (v2) keys.
 func ImportAxesFromYAML(r io.Reader, profileID int64) ([]db.Axis, error) {
+	data, err := io.ReadAll(io.LimitReader(r, MaxYAMLImportSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read yaml: %w", err)
+	}
+	if len(data) > MaxYAMLImportSize {
+		return nil, ErrYAMLTooLarge
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("decode yaml: %w", io.EOF)
+	}
+
 	var f yamlFile
-	if err := yaml.NewDecoder(r).Decode(&f); err != nil {
+	if err := yaml.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("decode yaml: %w", err)
 	}
 
@@ -43,9 +63,18 @@ func ImportAxesFromYAML(r io.Reader, profileID int64) ([]db.Axis, error) {
 		}
 	}
 
+	// Sort keys so the import order (and thus axis positions) is
+	// deterministic instead of following random map iteration.
+	keys := make([]string, 0, len(f.Axes))
+	for key := range f.Axes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
 	axes := make([]db.Axis, 0, len(f.Axes))
 	pos := 0
-	for key, ya := range f.Axes {
+	for _, key := range keys {
+		ya := f.Axes[key]
 		a := db.Axis{
 			ProfileID:   profileID,
 			AxisKey:     key,
@@ -76,6 +105,12 @@ func ImportAxesFromYAML(r io.Reader, profileID int64) ([]db.Axis, error) {
 			a.Keywords = append(a.Keywords, db.Keyword{
 				Word: kw,
 				Type: "boost",
+			})
+		}
+		for _, kw := range ya.KeywordsExclude {
+			a.Keywords = append(a.Keywords, db.Keyword{
+				Word: kw,
+				Type: "exclude",
 			})
 		}
 
@@ -122,6 +157,8 @@ func axisToYAML(axis *db.Axis) yamlAxis {
 			ya.KeywordsMust = append(ya.KeywordsMust, k.Word)
 		case "boost":
 			ya.KeywordsBoost = append(ya.KeywordsBoost, k.Word)
+		case "exclude":
+			ya.KeywordsExclude = append(ya.KeywordsExclude, k.Word)
 		}
 	}
 	return ya
