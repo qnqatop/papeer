@@ -78,6 +78,52 @@ func NormalizeLangScope(s string) (string, error) {
 // If a.ID == 0, a new axis is created. Otherwise, it updates the existing one.
 // Queries and keywords are replaced entirely (delete + re-insert).
 func (d *DB) SaveAxis(a *Axis) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := saveAxisTx(tx, a); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// AppendAxes inserts new axes for a profile in a single transaction, placing
+// them after the profile's existing axes (positions continue from the current
+// max). Either all axes are saved or none — a duplicate axis_key aborts the
+// whole batch. Input IDs are ignored; IDs are filled in on success.
+func (d *DB) AppendAxes(profileID int64, axes []Axis) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var maxPos sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(position) FROM axes WHERE profile_id=?`, profileID).Scan(&maxPos); err != nil {
+		return fmt.Errorf("max axis position: %w", err)
+	}
+	next := 0
+	if maxPos.Valid {
+		next = int(maxPos.Int64) + 1
+	}
+
+	for i := range axes {
+		axes[i].ID = 0
+		axes[i].ProfileID = profileID
+		axes[i].Position = next + i
+		if err := saveAxisTx(tx, &axes[i]); err != nil {
+			return fmt.Errorf("save axis %q: %w", axes[i].AxisKey, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// saveAxisTx creates or updates an axis with its queries and keywords inside
+// the given transaction.
+func saveAxisTx(tx *sql.Tx, a *Axis) error {
 	// Normalize lang_scope so the column's NOT NULL invariant holds, empty
 	// (unset by older callers/UI) maps to the English default, and a typo such
 	// as "fr" is rejected instead of silently matching no search provider.
@@ -86,12 +132,6 @@ func (d *DB) SaveAxis(a *Axis) error {
 		return err
 	}
 	a.LangScope = scope
-
-	tx, err := d.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 
 	if a.ID == 0 {
 		// Insert new axis.
@@ -138,13 +178,27 @@ func (d *DB) SaveAxis(a *Axis) error {
 		a.Keywords[i].ID = id
 		a.Keywords[i].AxisID = a.ID
 	}
-
-	return tx.Commit()
+	return nil
 }
 
+// DeleteAxis removes an axis. papers.axis_id references axes(id) without
+// ON DELETE, so papers found by this axis are detached (axis_id=NULL) first;
+// otherwise foreign_keys=ON makes the delete fail. paper_axes, queries and
+// keywords rows cascade.
 func (d *DB) DeleteAxis(id int64) error {
-	_, err := d.Exec(`DELETE FROM axes WHERE id=?`, id)
-	return err
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE papers SET axis_id=NULL WHERE axis_id=?`, id); err != nil {
+		return fmt.Errorf("detach papers: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM axes WHERE id=?`, id); err != nil {
+		return fmt.Errorf("delete axis: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ReorderAxes updates the position field for axes in the given order.

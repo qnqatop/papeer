@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -93,16 +94,23 @@ func (a *App) GenerateReviewDraft(profileID int64, model string, paperIDs []int6
 	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
-	a.setCancel(cancel)
+	token := a.setCancel(cancel)
 
-	go func() {
+	a.safeGo("GenerateReviewDraft", func() {
 		defer reviewMu.Unlock()
 		defer func() {
 			cancel()
-			a.clearCancel()
+			a.clearCancel(token)
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				// Unblock the UI, then let safeGo log the panic.
+				a.emitReviewError(fmt.Errorf("review draft failed: %v", r))
+				panic(r)
+			}
 		}()
 		a.runReviewDraft(ctx, client, chosenModel, papers, topicList, gaps, customPrompt)
-	}()
+	})
 
 	return nil
 }
@@ -180,6 +188,7 @@ func (a *App) runReviewDraft(ctx context.Context, client llm.Client, model strin
 
 	for _, t := range ordered {
 		if ctx.Err() != nil {
+			a.emitReviewError(ctx.Err())
 			return
 		}
 		if t.Size == 0 {
@@ -198,6 +207,7 @@ func (a *App) runReviewDraft(ctx context.Context, client llm.Client, model strin
 	}
 
 	if ctx.Err() != nil {
+		a.emitReviewError(ctx.Err())
 		return
 	}
 
@@ -220,7 +230,14 @@ func (a *App) runReviewDraft(ctx context.Context, client llm.Client, model strin
 	runtime.EventsEmit(a.ctx, "review:done", ReviewProgress{Stage: "done", Current: total, Total: total, Markdown: sb.String()})
 }
 
+// errReviewCancelled is reported in the terminal review:done event when the
+// user cancels, so the UI leaves its "generating" state.
+var errReviewCancelled = errors.New("review draft generation cancelled")
+
 func (a *App) emitReviewError(err error) {
+	if errors.Is(err, context.Canceled) {
+		err = errReviewCancelled
+	}
 	runtime.LogWarningf(a.ctx, "review draft: %v", err)
 	runtime.EventsEmit(a.ctx, "review:done", ReviewProgress{Stage: "error", Error: err.Error()})
 }
@@ -272,8 +289,13 @@ func (a *App) ensureSummaries(ctx context.Context, client llm.Client, papers []d
 		}
 
 		prompt := a.summaryPrompt(nil)
-		result, err := client.Complete(ctx, prompt, text)
+		callCtx, cancel := context.WithTimeout(ctx, summaryTimeout)
+		result, err := client.Complete(callCtx, prompt, text)
+		cancel()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			runtime.LogWarningf(a.ctx, "review: summary generation failed for %q: %v", p.Title, err)
 			continue
 		}
@@ -332,8 +354,10 @@ func buildSectionPrompt(t topics.Topic, byID map[int64]db.Paper, summariesByPape
 		if summary == "" {
 			summary = p.Abstract
 		}
-		if len(summary) > 600 {
-			summary = summary[:600] + "..."
+		// Truncate by runes, not bytes: summaries are often non-ASCII
+		// (e.g. Russian) and a byte cut would split a UTF-8 sequence.
+		if r := []rune(summary); len(r) > 600 {
+			summary = string(r[:600]) + "..."
 		}
 		sb.WriteString(fmt.Sprintf("- %s (%s)\n  Summary: %s\n\n", p.Title, year, summary))
 	}

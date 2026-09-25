@@ -34,13 +34,13 @@ func ExportGapsCSV(gaps []db.ExternalCitationWithMentions, w io.Writer) error {
 			ids[i] = strconv.FormatInt(id, 10)
 		}
 		row := []string{
-			g.Title,
+			csvSafe(g.Title),
 			year,
-			strings.Join(g.Authors, "; "),
+			csvSafe(strings.Join(g.Authors, "; ")),
 			strconv.Itoa(g.CitationCount),
 			strconv.Itoa(g.MentionCount),
 			strings.Join(ids, "; "),
-			g.S2PaperID,
+			csvSafe(g.S2PaperID),
 		}
 		if err := cw.Write(row); err != nil {
 			return err

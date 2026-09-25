@@ -72,32 +72,40 @@ func (d *DB) GetDownloadStats(profileID int64) (*DownloadStats, error) {
 		ByStatus: make(map[string]int),
 	}
 
+	// countBy runs a "key, COUNT(*)" query and feeds every row to add.
+	countBy := func(query string, add func(key string, count int)) error {
+		rows, err := d.Query(query, profileID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var key string
+			var count int
+			if err := rows.Scan(&key, &count); err != nil {
+				return err
+			}
+			add(key, count)
+		}
+		return rows.Err()
+	}
+
 	// By source.
-	rows, err := d.Query(`SELECT d.source, COUNT(*) FROM downloads d JOIN papers p ON d.paper_id=p.id WHERE p.profile_id=? GROUP BY d.source`, profileID)
-	if err != nil {
+	if err := countBy(`SELECT d.source, COUNT(*) FROM downloads d JOIN papers p ON d.paper_id=p.id WHERE p.profile_id=? GROUP BY d.source`,
+		func(src string, count int) {
+			stats.BySource[src] = count
+			stats.TotalAttempts += count
+		}); err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var src string
-		var count int
-		rows.Scan(&src, &count)
-		stats.BySource[src] = count
-		stats.TotalAttempts += count
-	}
-	rows.Close()
 
 	// By status.
-	rows, err = d.Query(`SELECT d.status, COUNT(*) FROM downloads d JOIN papers p ON d.paper_id=p.id WHERE p.profile_id=? GROUP BY d.status`, profileID)
-	if err != nil {
+	if err := countBy(`SELECT d.status, COUNT(*) FROM downloads d JOIN papers p ON d.paper_id=p.id WHERE p.profile_id=? GROUP BY d.status`,
+		func(status string, count int) {
+			stats.ByStatus[status] = count
+		}); err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var status string
-		var count int
-		rows.Scan(&status, &count)
-		stats.ByStatus[status] = count
-	}
-	rows.Close()
 
 	return stats, nil
 }
@@ -122,7 +130,9 @@ func (d *DB) TopFailReasons(profileID int64, limit int) ([]struct {
 			Reason string
 			Count  int
 		}
-		rows.Scan(&r.Reason, &r.Count)
+		if err := rows.Scan(&r.Reason, &r.Count); err != nil {
+			return nil, err
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()

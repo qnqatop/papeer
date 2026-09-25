@@ -102,7 +102,22 @@ func (d *DB) migrate() error {
 	if err := d.migrateKeywordExclude(); err != nil {
 		return fmt.Errorf("migrate keyword exclude: %w", err)
 	}
+	if _, err := d.ResetInterruptedSummaries(); err != nil {
+		return fmt.Errorf("reset interrupted summaries: %w", err)
+	}
 	return nil
+}
+
+// ResetInterruptedSummaries marks summaries left in 'generating' state (the
+// app crashed or was killed mid-generation) as 'error', so they can be
+// regenerated instead of being reported as in progress forever. Called on
+// every DB open, when no generation can be running yet.
+func (d *DB) ResetInterruptedSummaries() (int64, error) {
+	res, err := d.Exec(`UPDATE summaries SET status='error', error_msg='interrupted: generation did not finish', updated_at=CURRENT_TIMESTAMP WHERE status='generating'`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (d *DB) migrateKeywordExclude() error {
