@@ -17,15 +17,21 @@ export const usePapersStore = defineStore('papers', () => {
   const loading = ref(false)
   const filter = ref<db.PaperFilter>(new db.PaperFilter({ profile_id: 0, limit: 50, offset: 0 }))
 
+  // Monotonic id of the latest fetchPapers call: a slow response to an older
+  // filter must not overwrite the result of a newer one.
+  let fetchSeq = 0
+
   async function fetchPapers() {
     if (!filter.value.profile_id) return
+    const seq = ++fetchSeq
     loading.value = true
     try {
       const result = await ListPapers(filter.value)
+      if (seq !== fetchSeq) return
       papers.value = result.papers || []
       total.value = result.total
     } finally {
-      loading.value = false
+      if (seq === fetchSeq) loading.value = false
     }
   }
 

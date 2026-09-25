@@ -112,13 +112,21 @@ import {
   RemoveOutline, AddOutline, DownloadOutline,
   ExpandOutline, ContractOutline,
 } from '@vicons/ionicons5'
-import * as pdfjsLib from 'pdfjs-dist'
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url'
+// Legacy build: pdf.js 6 modern build relies on very new JS built-ins
+// (Map#getOrInsertComputed, Math.sumPrecise) missing in WebKitGTK/WKWebView
+// and older WebView2; the legacy build ships core-js polyfills instead.
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url'
 
 import { GetPaperPDFData } from '../../wailsjs/go/app/App'
 
 // Set worker before any pdf.js calls
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+
+// Absolute same-origin URL (with trailing slash) of a pdf.js asset dir.
+function pdfjsAssetUrl(dir: string): string {
+  return new URL(`${import.meta.env.BASE_URL}pdfjs/${dir}/`, document.baseURI).href
+}
 
 const { t } = useI18n()
 
@@ -259,12 +267,21 @@ async function loadPDF() {
       bytes[i] = binaryString.charCodeAt(i)
     }
 
-    // 3. Скармливаем бинарные данные в pdf.js (обрати внимание на динамический cMapUrl)
+    // 3. Скармливаем бинарные данные в pdf.js. CMaps/шрифты/wasm отдаются
+    // с нашего origin (см. pdfjsAssets в vite.config.ts) — работает офлайн.
     const loadingTask = pdfjsLib.getDocument({
       data: bytes,
-      cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+      cMapUrl: pdfjsAssetUrl('cmaps'),
       cMapPacked: true,
-    })
+      standardFontDataUrl: pdfjsAssetUrl('standard_fonts'),
+      iccUrl: pdfjsAssetUrl('iccs'),
+      wasmUrl: pdfjsAssetUrl('wasm'),
+      // Defence in depth: pdf.js 6 no longer reads these (eval-based font
+      // rendering was removed and scripting only runs in pdf_viewer with a
+      // sandbox we never load), but keep them explicit in case of a downgrade.
+      isEvalSupported: false,
+      enableScripting: false,
+    } as Parameters<typeof pdfjsLib.getDocument>[0])
 
     loadingTask.onProgress = (progress: { loaded: number; total: number }) => {
       if (progress.total > 0) {
@@ -329,8 +346,7 @@ async function renderCurrentPage() {
     canvas.height = viewport.height
     pageWidth.value = viewport.width
 
-    const ctx = canvas.getContext('2d')!
-    currentRenderTask = page.render({ canvasContext: ctx, viewport })
+    currentRenderTask = page.render({ canvas, viewport })
     await currentRenderTask.promise
     currentRenderTask = null
   } catch (e: any) {

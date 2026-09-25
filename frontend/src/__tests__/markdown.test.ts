@@ -56,4 +56,17 @@ describe('renderMarkdown', () => {
     const out = renderMarkdown('text\n\n\n\nmore text')
     expect(out).not.toContain('<p></p>')
   })
+
+  it('does not match inline math across lines', () => {
+    // Two unrelated dollar amounts on different lines are not a formula.
+    const out = renderMarkdown('costs $5 per unit\n\nor $10 in bulk')
+    expect(out).not.toContain('math-inline')
+    expect(out).toContain('$5 per unit')
+    expect(out).toContain('$10 in bulk')
+  })
+
+  it('still matches inline math within a line', () => {
+    expect(renderMarkdown('a $x + y$ b\nnext $z$')).toContain('<code class="math-inline">x + y</code>')
+    expect(renderMarkdown('a $x + y$ b\nnext $z$')).toContain('<code class="math-inline">z</code>')
+  })
 })
