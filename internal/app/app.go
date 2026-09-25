@@ -45,24 +45,20 @@ func (a *App) CheckForUpdates() (*UpdateInfo, error) {
 	return a.updater.CheckForUpdates()
 }
 
-func (a *App) DownloadUpdate(assetURL string) error {
+// DownloadUpdate downloads, verifies (signed SHA256SUMS) and stages the
+// release found by the last CheckForUpdates. It deliberately takes no URL:
+// the webview must not be able to choose what gets installed. Concurrent
+// calls are rejected by the updater.
+func (a *App) DownloadUpdate() error {
 	if a.updater == nil {
 		return fmt.Errorf("updater not initialized")
 	}
 
-	// Clean up any staging dir from a previous download attempt so repeated
-	// downloads don't leak temp directories.
-	if prev := a.updater.GetStagingDir(); prev != "" {
-		os.RemoveAll(prev)
-		a.updater.SetStagingDir("")
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	stagingDir, err := os.MkdirTemp("", "papeer-update")
-	if err != nil {
-		return fmt.Errorf("create staging dir: %w", err)
-	}
-
-	archivePath, err := a.updater.DownloadUpdate(assetURL, func(downloaded, total int64) {
+	return a.updater.PrepareUpdate(ctx, func(downloaded, total int64) {
 		percentage := float64(0)
 		if total > 0 {
 			percentage = float64(downloaded) / float64(total) * 100
@@ -73,30 +69,13 @@ func (a *App) DownloadUpdate(assetURL string) error {
 			"total":      total,
 		})
 	})
-	if err != nil {
-		os.RemoveAll(stagingDir)
-		return err
-	}
-	defer os.Remove(archivePath)
-
-	if _, err := a.updater.ExtractArchive(archivePath, stagingDir); err != nil {
-		os.RemoveAll(stagingDir)
-		return err
-	}
-
-	a.updater.SetStagingDir(stagingDir)
-	return nil
 }
 
 func (a *App) InstallAndRestart() error {
 	if a.updater == nil {
 		return fmt.Errorf("updater not initialized")
 	}
-	stagingDir := a.updater.GetStagingDir()
-	if stagingDir == "" {
-		return fmt.Errorf("no downloaded update to install")
-	}
-	return a.updater.InstallAndRestart(stagingDir)
+	return a.updater.InstallStaged()
 }
 
 // App is the Wails bindings facade.
