@@ -17,7 +17,6 @@ export function useUpdater() {
   const downloadPercentage = ref(0)
   const isUpdateReady = ref(false)
   const updateError = ref('')
-  const downloadAssetURL = ref('')
 
   const unlisten = EventsOn('update:download-progress', (data: { percentage?: number }) => {
     downloadPercentage.value = Math.round(data?.percentage ?? 0)
@@ -36,7 +35,6 @@ export function useUpdater() {
       latestVersion.value = info?.latestVersion ?? ''
       if (info?.hasUpdate) {
         updateStatus.value = 'available'
-        downloadAssetURL.value = info.assetURL
       } else {
         updateStatus.value = 'up-to-date'
       }
@@ -49,13 +47,15 @@ export function useUpdater() {
     }
   }
 
+  // The backend downloads the release found by its own last CheckForUpdates;
+  // the webview never supplies a URL.
   async function downloadUpdate() {
-    if (!downloadAssetURL.value) return
+    if (updateStatus.value !== 'available' || isDownloading.value) return
     updateError.value = ''
     isDownloading.value = true
     downloadPercentage.value = 0
     try {
-      await DownloadUpdate(downloadAssetURL.value)
+      await DownloadUpdate()
       isUpdateReady.value = true
     } catch (e: any) {
       updateError.value = String(e?.message ?? e)
@@ -83,7 +83,6 @@ export function useUpdater() {
     downloadPercentage,
     isUpdateReady,
     updateError,
-    downloadAssetURL,
     checkUpdates,
     downloadUpdate,
     installUpdate,
