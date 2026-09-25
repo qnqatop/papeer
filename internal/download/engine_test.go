@@ -225,6 +225,42 @@ func TestEngine_SkipCached(t *testing.T) {
 	if doneSource != "cached" {
 		t.Errorf("source = %q, want 'cached'", doneSource)
 	}
+
+	// The cached hit must leave an "ok" download row with the filename so
+	// the PDF viewer (GetPaperPDFPath) can locate the file.
+	dls, err := d.ListDownloads(paper.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, dl := range dls {
+		if dl.Status == "ok" && dl.Filename != nil && *dl.Filename == filename {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no ok download row with filename %q: %+v", filename, dls)
+	}
+}
+
+func TestIsTransientFailure_TypedOnly(t *testing.T) {
+	// Text that merely contains "503"/"eof" must not be treated as transient.
+	notTransient := []error{
+		fmt.Errorf("PDF validation failed for https://doi.org/10.1503/cmaj.1: not a PDF"),
+		fmt.Errorf("PDF validation failed for https://x.org/geoffrey.pdf: PDF truncated (no %%%%EOF marker)"),
+		fmt.Errorf("downloading x: %w", &httpclient.StatusError{Code: 404, Host: "a"}),
+	}
+	for _, err := range notTransient {
+		if isTransientFailure(err) {
+			t.Errorf("isTransientFailure(%v) = true, want false", err)
+		}
+	}
+	if !isTransientFailure(fmt.Errorf("downloading x: %w", &httpclient.StatusError{Code: 503, Host: "a"})) {
+		t.Error("wrapped 503 StatusError should be transient")
+	}
+	if isTransientFailure(context.Canceled) {
+		t.Error("context.Canceled must not be transient")
+	}
 }
 
 func TestEngine_ContextCancel(t *testing.T) {

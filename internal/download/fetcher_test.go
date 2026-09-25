@@ -1,6 +1,57 @@
 package download
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/qnqatop/papeer/internal/httpclient"
+)
+
+func TestIsBotWallError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{fmt.Errorf("all UA strategies failed: %w", &httpclient.StatusError{Code: 403}), true},
+		{&httpclient.StatusError{Code: 429}, true},
+		{&httpclient.StatusError{Code: 503}, true},
+		{&httpclient.StatusError{Code: 404}, false},
+		{errors.New(`Get "file:///etc/passwd": unsupported protocol scheme "file"`), false},
+		{errors.New("dial tcp: connection refused"), false},
+	}
+	for _, tc := range cases {
+		if got := isBotWallError(tc.err); got != tc.want {
+			t.Errorf("isBotWallError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+	if isHTTPURL("file:///etc/passwd") || isHTTPURL("ftp://x/y.pdf") || !isHTTPURL("https://x.org/a.pdf") {
+		t.Error("isHTTPURL misclassified")
+	}
+}
+
+func TestWriteFileAtomic(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "a.pdf")
+	if err := os.WriteFile(dest, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(dest, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(dest); string(b) != "new" {
+		t.Errorf("content = %q", b)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Errorf("temp file left behind: %v", entries)
+	}
+	if err := writeFileAtomic(filepath.Join(dir, "missing", "b.pdf"), []byte("x")); err == nil {
+		t.Error("expected error for missing directory")
+	}
+}
 
 func TestExtractPDF_MetaTag(t *testing.T) {
 	html := `<html><head>
