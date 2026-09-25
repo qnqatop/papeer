@@ -48,7 +48,6 @@ describe('useUpdater', () => {
 
     expect(u.updateStatus.value).toBe('available')
     expect(u.latestVersion.value).toBe('v2.0.0')
-    expect(u.downloadAssetURL.value).toBe('https://example.com/a.zip')
   })
 
   it('reports up-to-date when there is no newer release', async () => {
@@ -81,9 +80,11 @@ describe('useUpdater', () => {
     )
 
     const u = useUpdater()
-    u.downloadAssetURL.value = 'https://example.com/a.zip'
+    u.updateStatus.value = 'available'
 
     const p = u.downloadUpdate()
+    // The binding takes no URL: the backend uses its own checked release.
+    expect(DownloadUpdate).toHaveBeenCalledWith()
     expect(u.isDownloading.value).toBe(true)
     expect(u.isUpdateReady.value).toBe(false)
 
@@ -95,7 +96,7 @@ describe('useUpdater', () => {
     expect(u.isUpdateReady.value).toBe(true)
   })
 
-  it('does nothing when there is no asset URL to download', async () => {
+  it('does nothing when no update is available', async () => {
     const u = useUpdater()
     await u.downloadUpdate()
     expect(DownloadUpdate).not.toHaveBeenCalled()

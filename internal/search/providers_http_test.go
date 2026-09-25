@@ -2,12 +2,17 @@ package search
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/qnqatop/papeer/internal/httpclient"
+	"github.com/qnqatop/papeer/internal/ptr"
 )
 
 func jsonHandler(body string) http.Handler {
@@ -323,5 +328,328 @@ func TestArXivSearch_MalformedXMLReturnsError(t *testing.T) {
 	_, err := a.Search(context.Background(), "q", 1, 2020)
 	if err == nil {
 		t.Error("expected XML parse error")
+	}
+}
+
+// ─── CyberLeninka ─────────────────────────────────────────────────────────
+
+func TestCyberLeninkaSearch_HappyPath(t *testing.T) {
+	var gotMethod string
+	var gotBody clRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"found": 1,
+			"articles": [{
+				"name": "Рекомендательная <b>система</b> для абитуриентов",
+				"annotation": "Аннотация со <b>ссылкой</b>",
+				"journal": "Вестник <b>вуза</b>",
+				"year": "2019",
+				"authors": ["Иванов И.И.", "Петров П.П."],
+				"link": "/article/n/rekomendatelnaya-sistema"
+			}]
+		}`))
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL, email: "real@univ.edu"}
+	papers, err := cl.Search(context.Background(), "рекомендательная система абитуриент", 10, 2015)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	// Request must be a POST carrying the documented JSON body. With a year
+	// filter the page is enlarged to clYearFilterSize (filtering is
+	// client-side), and the result is cut back to the requested limit.
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotBody.Mode != "articles" || gotBody.Q != "рекомендательная система абитуриент" || gotBody.Size != clYearFilterSize || gotBody.From != 0 {
+		t.Errorf("request body = %+v", gotBody)
+	}
+
+	if len(papers) != 1 {
+		t.Fatalf("len(papers) = %d", len(papers))
+	}
+	p := papers[0]
+	if p.Title != "Рекомендательная система для абитуриентов" {
+		t.Errorf("Title not stripped of <b>: %q", p.Title)
+	}
+	if p.Abstract != "Аннотация со ссылкой" {
+		t.Errorf("Abstract = %q", p.Abstract)
+	}
+	if p.Venue != "Вестник вуза" {
+		t.Errorf("Venue = %q", p.Venue)
+	}
+	if p.Year == nil || *p.Year != 2019 {
+		t.Errorf("Year = %v (want 2019 from string)", p.Year)
+	}
+	if len(p.Authors) != 2 {
+		t.Errorf("Authors = %v", p.Authors)
+	}
+	if p.DOI != "" {
+		t.Errorf("DOI = %q, want empty (CyberLeninka has no DOI)", p.DOI)
+	}
+	if p.PdfURL != "https://cyberleninka.ru/article/n/rekomendatelnaya-sistema/pdf" {
+		t.Errorf("PdfURL = %q", p.PdfURL)
+	}
+	if p.Source != "cyberleninka" {
+		t.Errorf("Source = %q", p.Source)
+	}
+}
+
+func TestCyberLeninkaSearch_CapsSizeAt100(t *testing.T) {
+	var gotSize int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body clRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotSize = body.Size
+		_, _ = w.Write([]byte(`{"found": 0, "articles": []}`))
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	if _, err := cl.Search(context.Background(), "q", 500, 0); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotSize != 100 {
+		t.Errorf("size = %d, want capped at 100", gotSize)
+	}
+}
+
+func TestCyberLeninkaSearch_YearMinFilter(t *testing.T) {
+	srv := httptest.NewServer(jsonHandler(`{
+		"found": 3,
+		"articles": [
+			{"name": "Old", "year": "2010", "link": "/article/n/old"},
+			{"name": "New", "year": 2022, "link": "/article/n/new"},
+			{"name": "NoYear", "link": "/article/n/noyear"}
+		]
+	}`))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	papers, err := cl.Search(context.Background(), "q", 10, 2015)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Old (2010) dropped; New (2022) kept; NoYear kept (unknown year not filtered).
+	if len(papers) != 2 {
+		t.Fatalf("len(papers) = %d, want 2 (Old filtered out)", len(papers))
+	}
+	for _, p := range papers {
+		if p.Title == "Old" {
+			t.Errorf("2010 paper should have been filtered by yearMin=2015")
+		}
+	}
+}
+
+func TestCyberLeninkaSearch_SizeIsLimitWithoutYearFilter(t *testing.T) {
+	var gotSize int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body clRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotSize = body.Size
+		_, _ = w.Write([]byte(`{"found": 0, "articles": []}`))
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	if _, err := cl.Search(context.Background(), "q", 10, 0); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotSize != 10 {
+		t.Errorf("size = %d, want 10 (no year filter → no over-fetch)", gotSize)
+	}
+}
+
+// Regression: the radar asks for 3 recent papers. The API has no year filter,
+// so asking for only 3 records returned the 3 most relevant — all old — and the
+// client-side filter left nothing.
+func TestCyberLeninkaSearch_YearFilterOverFetchesAndTruncates(t *testing.T) {
+	var articles []string
+	for i := 0; i < 20; i++ {
+		articles = append(articles, fmt.Sprintf(`{"name": "Old %d", "year": 2001, "link": "/article/n/old-%d"}`, i, i))
+	}
+	for i := 0; i < 5; i++ {
+		articles = append(articles, fmt.Sprintf(`{"name": "New %d", "year": 2025, "link": "/article/n/new-%d"}`, i, i))
+	}
+	srv := httptest.NewServer(jsonHandler(`{"found": 25, "articles": [` + strings.Join(articles, ",") + `]}`))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	papers, err := cl.Search(context.Background(), "q", 3, 2024)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(papers) != 3 {
+		t.Fatalf("len(papers) = %d, want 3 (limit)", len(papers))
+	}
+	for _, p := range papers {
+		if !strings.HasPrefix(p.Title, "New") {
+			t.Errorf("unexpected paper %q, want only recent ones", p.Title)
+		}
+	}
+}
+
+func TestCyberLeninkaSearch_SkipsNonArticleLinks(t *testing.T) {
+	srv := httptest.NewServer(jsonHandler(`{
+		"found": 4,
+		"articles": [
+			{"name": "Empty", "link": ""},
+			{"name": "HostSuffix", "link": ".evil.com/x"},
+			{"name": "Absolute", "link": "https://evil.com/article/n/x"},
+			{"name": "Good", "link": "/article/n/good"}
+		]
+	}`))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	papers, err := cl.Search(context.Background(), "q", 10, 0)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(papers) != 1 || papers[0].Title != "Good" {
+		t.Fatalf("papers = %+v, want only the /article/ one", papers)
+	}
+	if papers[0].PdfURL != "https://cyberleninka.ru/article/n/good/pdf" {
+		t.Errorf("PdfURL = %q", papers[0].PdfURL)
+	}
+}
+
+// A captcha page served with 200 must surface as HTTP 429 (so the engine's
+// circuit breaker skips the provider) and must not be retried.
+func TestCyberLeninkaSearch_CaptchaPageIsRateLimit(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><body>captcha</body></html>"))
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	_, err := cl.Search(context.Background(), "q", 10, 0)
+	if got := httpStatusCode(err); got != 429 {
+		t.Fatalf("status = %d (err %v), want 429", got, err)
+	}
+	if providerUnavailableReason(err) == "" {
+		t.Error("captcha error should trip the circuit breaker")
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("calls = %d, want 1 (no retry on captcha)", n)
+	}
+}
+
+func withFastCLBackoff(t *testing.T) {
+	t.Helper()
+	saved := clRetryBackoff
+	clRetryBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { clRetryBackoff = saved })
+}
+
+func TestCyberLeninkaSearch_RetriesTransientThenSucceeds(t *testing.T) {
+	withFastCLBackoff(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"found": 1, "articles": [{"name": "Ok", "link": "/article/n/ok"}]}`))
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	papers, err := cl.Search(context.Background(), "q", 10, 0)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(papers) != 1 {
+		t.Fatalf("len(papers) = %d, want 1", len(papers))
+	}
+	if n := atomic.LoadInt32(&calls); n != 3 {
+		t.Errorf("calls = %d, want 3", n)
+	}
+}
+
+func TestCyberLeninkaSearch_GivesUpAfterAllAttempts(t *testing.T) {
+	withFastCLBackoff(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	_, err := cl.Search(context.Background(), "q", 10, 0)
+	if got := httpStatusCode(err); got != 429 {
+		t.Fatalf("status = %d (err %v), want 429", got, err)
+	}
+	if n, want := atomic.LoadInt32(&calls), int32(len(clRetryBackoff)+1); n != want {
+		t.Errorf("calls = %d, want %d", n, want)
+	}
+}
+
+func TestCyberLeninkaSearch_DoesNotRetryClientErrors(t *testing.T) {
+	withFastCLBackoff(t)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	cl := &CyberLeninka{client: newTestHTTPClient(), baseURL: srv.URL}
+	if _, err := cl.Search(context.Background(), "q", 10, 0); httpStatusCode(err) != 400 {
+		t.Fatalf("err = %v, want HTTP 400", err)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("calls = %d, want 1", n)
+	}
+}
+
+func TestStripTags(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Рекомендательная <b>система</b>", "Рекомендательная система"},
+		{"<B>Bold</B> and <em>em</em>", "Bold and em"},
+		// Comparison signs in text must survive (a generic <[^>]+> ate them).
+		{"различия значимы (p<0.05) при n>30", "различия значимы (p<0.05) при n>30"},
+		{"&laquo;Цифровая&raquo; школа &amp; вуз", "«Цифровая» школа & вуз"},
+		{"&quot;Quoted&quot; &lt;b&gt; stays literal", `"Quoted" <b> stays literal`},
+		{"  padded  ", "padded"},
+	}
+	for _, c := range cases {
+		if got := stripTags(c.in); got != c.want {
+			t.Errorf("stripTags(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestCLYear_Unmarshal(t *testing.T) {
+	cases := []struct {
+		in   string
+		want *int
+	}{
+		{`2019`, ptr.Ptr(2019)},
+		{`"2019"`, ptr.Ptr(2019)},
+		{`""`, nil},
+		{`null`, nil},
+		{`"n/a"`, nil},
+	}
+	for _, c := range cases {
+		var y clYear
+		if err := json.Unmarshal([]byte(c.in), &y); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", c.in, err)
+		}
+		switch {
+		case c.want == nil && y.v != nil:
+			t.Errorf("clYear(%s) = %d, want nil", c.in, *y.v)
+		case c.want != nil && (y.v == nil || *y.v != *c.want):
+			t.Errorf("clYear(%s) = %v, want %d", c.in, y.v, *c.want)
+		}
 	}
 }

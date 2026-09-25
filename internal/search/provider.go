@@ -5,6 +5,9 @@ import "context"
 // Provider searches a single academic API and returns raw papers.
 type Provider interface {
 	Name() string
+	// Language reports the article language this provider serves ("en" or "ru"),
+	// so the engine can restrict an axis to sources matching its language scope.
+	Language() string
 	Search(ctx context.Context, query string, limit int, yearMin int) ([]RawPaper, error)
 }
 

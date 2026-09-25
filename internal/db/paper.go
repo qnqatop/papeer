@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -44,6 +43,9 @@ func (d *DB) UpsertPaper(p *Paper) error {
 	if err := d.mergePaper(existingID, p); err != nil {
 		return err
 	}
+	// Report the id of the row the paper was merged into, so callers can
+	// load or update it (status, s2 id, ...).
+	p.ID = existingID
 	// Link existing paper to new axis.
 	if p.AxisID != nil {
 		return d.LinkPaperAxis(existingID, *p.AxisID)
@@ -137,6 +139,7 @@ func sourcePriority(src string) int {
 	priorities := map[string]int{
 		"arxiv": 0, "semantic_scholar": 1, "openalex": 2,
 		"unpaywall": 3, "crossref": 4, "s2_title": 5,
+		"cyberleninka": 6,
 	}
 	if p, ok := priorities[src]; ok {
 		return p
@@ -153,6 +156,13 @@ func (d *DB) GetPaper(id int64) (*Paper, error) {
 	}
 	return &p, nil
 }
+
+// maxListLimit caps PaperFilter.Limit so a bogus value from the frontend
+// can't load an unbounded result set.
+const maxListLimit = 10000
+
+// likeEscaper escapes LIKE metacharacters for use with ESCAPE '\'.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 func (d *DB) ListPapers(f PaperFilter) ([]Paper, int, error) {
 	where := []string{"profile_id=?"}
@@ -191,8 +201,9 @@ func (d *DB) ListPapers(f PaperFilter) ([]Paper, int, error) {
 		args = append(args, f.MinUserScore)
 	}
 	if f.Search != "" {
-		where = append(where, "(title LIKE ? OR abstract LIKE ?)")
-		like := "%" + f.Search + "%"
+		// Escape LIKE wildcards so "%" and "_" in user input match literally.
+		where = append(where, `(title LIKE ? ESCAPE '\' OR abstract LIKE ? ESCAPE '\')`)
+		like := "%" + likeEscaper.Replace(f.Search) + "%"
 		args = append(args, like, like)
 	}
 	if f.HasSummary {
@@ -228,6 +239,9 @@ func (d *DB) ListPapers(f PaperFilter) ([]Paper, int, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
 	}
 
 	query := fmt.Sprintf(""+
@@ -679,11 +693,4 @@ func (d *DB) GetDownloadedPapers(profileID int64) ([]Paper, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
-}
-
-// Helper to unmarshal JSON from raw bytes (used internally).
-func unmarshalJSON(data []byte, v interface{}) {
-	if len(data) > 0 {
-		json.Unmarshal(data, v)
-	}
 }

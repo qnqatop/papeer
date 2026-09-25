@@ -112,3 +112,22 @@ func TestRateLimitRegistry_ContextCancel(t *testing.T) {
 		t.Error("expected error on cancelled context")
 	}
 }
+
+func TestRateLimitRegistry_SetLimit_SameLimitKeepsLimiter(t *testing.T) {
+	reg := NewRateLimitRegistry()
+	reg.SetLimit("slow.example", 0.5)
+	ctx := context.Background()
+	if err := reg.Wait(ctx, "slow.example"); err != nil {
+		t.Fatal(err)
+	}
+	// A shared registry is re-configured by every new client; re-setting the
+	// same limit must not hand out a fresh token.
+	reg.SetLimit("slow.example", 0.5)
+	start := time.Now()
+	if err := reg.Wait(ctx, "slow.example"); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(start); waited < time.Second {
+		t.Errorf("second Wait took %v, want ~2s (limiter must not be reset)", waited)
+	}
+}

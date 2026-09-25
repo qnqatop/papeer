@@ -395,3 +395,76 @@ func TestExportAndReimportTopics(t *testing.T) {
 		t.Fatalf("expected 2 keywords, got %d", len(a.Keywords))
 	}
 }
+
+func TestImportYAML_LangScope(t *testing.T) {
+	yamlData := `
+topics:
+  ru_topic:
+    description: "Russian-scoped topic"
+    lang_scope: ru
+    queries:
+      - "рекомендательная система"
+  en_topic:
+    description: "Default English topic"
+    queries:
+      - "recommender system"
+`
+	axes, err := ImportAxesFromYAML(strings.NewReader(yamlData), 1)
+	if err != nil {
+		t.Fatalf("ImportAxesFromYAML: %v", err)
+	}
+
+	byKey := map[string]db.Axis{}
+	for _, a := range axes {
+		byKey[a.AxisKey] = a
+	}
+	if got := byKey["ru_topic"].LangScope; got != "ru" {
+		t.Errorf("ru_topic LangScope = %q, want ru", got)
+	}
+	// en_topic omits lang_scope → the English default.
+	if got := byKey["en_topic"].LangScope; got != "en" {
+		t.Errorf("en_topic LangScope = %q, want en", got)
+	}
+}
+
+func TestImportYAML_LangScope_NormalizedAndValidated(t *testing.T) {
+	axes, err := ImportAxesFromYAML(strings.NewReader(`
+topics:
+  upper:
+    lang_scope: RU
+    queries: ["q"]
+`), 1)
+	if err != nil {
+		t.Fatalf("ImportAxesFromYAML: %v", err)
+	}
+	if len(axes) != 1 || axes[0].LangScope != "ru" {
+		t.Fatalf("axes = %+v, want one axis with LangScope ru", axes)
+	}
+
+	_, err = ImportAxesFromYAML(strings.NewReader(`
+topics:
+  french:
+    lang_scope: fr
+    queries: ["q"]
+`), 1)
+	if err == nil || !strings.Contains(err.Error(), "french") {
+		t.Errorf("err = %v, want an invalid lang_scope error naming the axis", err)
+	}
+}
+
+func TestExportYAML_LangScope_OnlyEmittedForRu(t *testing.T) {
+	data, err := ExportAxesToYAML([]db.Axis{
+		{AxisKey: "ru_topic", LangScope: "ru", Queries: []db.Query{{Text: "q"}}},
+		{AxisKey: "en_topic", LangScope: "en", Queries: []db.Query{{Text: "q"}}},
+	})
+	if err != nil {
+		t.Fatalf("ExportAxesToYAML: %v", err)
+	}
+	out := string(data)
+	if !strings.Contains(out, "lang_scope: ru") {
+		t.Errorf("expected 'lang_scope: ru' in export, got:\n%s", out)
+	}
+	if strings.Contains(out, "lang_scope: en") {
+		t.Errorf("did not expect 'lang_scope: en' (default omitted), got:\n%s", out)
+	}
+}

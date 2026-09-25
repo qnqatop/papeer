@@ -74,3 +74,18 @@ func TestGenerateFilename_Uniqueness(t *testing.T) {
 		t.Errorf("expected different filenames for different titles, got same: %s", f1)
 	}
 }
+
+func TestGenerateFilename_Cyrillic(t *testing.T) {
+	got := GenerateFilename("Иванов И. И.", 2021, "Рекомендательная система для абитуриентов")
+	if !strings.HasPrefix(got, "ivanov_2021_rekomendatelnaya_sistema_dlya_abiturientov_") {
+		t.Errorf("unexpected filename: %s", got)
+	}
+}
+
+func TestGenerateFilename_CyrillicFullName(t *testing.T) {
+	// Surname first: the patronymic must not be taken as the last name.
+	got := GenerateFilename("Щукина Юлия Сергеевна", 2020, "Йогурт и ёлка")
+	if !strings.HasPrefix(got, "schukina_2020_yogurt_i_elka_") {
+		t.Errorf("unexpected filename: %s", got)
+	}
+}

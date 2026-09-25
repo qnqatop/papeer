@@ -21,6 +21,8 @@ func NewArXiv(c *httpclient.Client) *ArXiv {
 
 func (a *ArXiv) Name() string { return "arxiv" }
 
+func (a *ArXiv) Language() string { return "en" }
+
 func (a *ArXiv) Search(ctx context.Context, query string, limit int, yearMin int) ([]RawPaper, error) {
 	base := a.baseURL
 	if base == "" {

@@ -21,6 +21,7 @@ CURRENT_VERSION="v0.0.1"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SERVE_DIR="${SERVE_DIR:-/tmp/papeer-update-test}"   # holds the NEW app, outside build/bin
 LDPKG="github.com/qnqatop/papeer/internal/app.Version"
+KEYPKG="github.com/qnqatop/papeer/internal/updater.PublicKey"
 
 echo "============================================"
 echo " Papeer Auto-Updater Test"
@@ -36,6 +37,14 @@ echo ""
 echo "==> Building mock update server..."
 cd "$ROOT"
 go build -o /tmp/mock-update-server ./cmd/mock-update-server/
+
+# Throwaway signing key pair: the mock signs SHA256SUMS with the private key
+# and the app under test is built with the public key, so the full signature
+# path is exercised. The app is built with -tags mockupdate — only such builds
+# honour PAPEER_UPDATE_API (release builds always talk to api.github.com).
+echo "==> Generating throwaway update signing key..."
+eval "$(go run ./cmd/release-sign keygen)"
+export MOCK_SIGNING_KEY="${UPDATE_SIGNING_KEY}"
 
 # ── Step 1b: On macOS, build two REAL apps ──────────────
 #
@@ -54,13 +63,13 @@ if [ "$GOOS" = "darwin" ]; then
     fi
 
     echo "==> Building NEW app ${NEW_VERSION} (served)..."
-    wails build -clean -ldflags "-X ${LDPKG}=${NEW_VERSION}"
+    wails build -clean -tags mockupdate -ldflags "-X ${LDPKG}=${NEW_VERSION} -X ${KEYPKG}=${UPDATE_PUBLIC_KEY}"
     rm -rf "$SERVE_DIR"
     mkdir -p "$SERVE_DIR"
     cp -R build/bin/Papeer.app "$SERVE_DIR/Papeer.app"
 
     echo "==> Building CURRENT app ${CURRENT_VERSION} (run)..."
-    wails build -clean -ldflags "-X ${LDPKG}=${CURRENT_VERSION}"
+    wails build -clean -tags mockupdate -ldflags "-X ${LDPKG}=${CURRENT_VERSION} -X ${KEYPKG}=${UPDATE_PUBLIC_KEY}"
 
     export PAPEER_REAL_APP="$SERVE_DIR/Papeer.app"
     echo "==> Mock will serve real app from ${PAPEER_REAL_APP}"
@@ -152,5 +161,5 @@ else
     echo " install worked. Press Ctrl+C when done."
     echo "============================================"
     echo ""
-    make dev
+    make dev VERSION="${CURRENT_VERSION}" WAILS_TAGS=mockupdate UPDATE_PUBLIC_KEY="${UPDATE_PUBLIC_KEY}"
 fi

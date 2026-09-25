@@ -11,8 +11,9 @@ import (
 
 // ExportBibTeX writes papers as BibTeX entries to w.
 func ExportBibTeX(papers []db.Paper, w io.Writer) error {
+	usedKeys := make(map[string]bool, len(papers))
 	for _, p := range papers {
-		key := bibtexKey(p)
+		key := uniqueKey(bibtexKey(p), usedKeys)
 		if _, err := fmt.Fprintf(w, "@article{%s,\n", key); err != nil {
 			return err
 		}
@@ -22,7 +23,12 @@ func ExportBibTeX(papers []db.Paper, w io.Writer) error {
 			}
 		}
 		if len(p.Authors) > 0 {
-			if err := writeBibField(w, "author", strings.Join(p.Authors, " and ")); err != nil {
+			// Escape each name separately: " and " is BibTeX syntax.
+			authors := make([]string, len(p.Authors))
+			for i, a := range p.Authors {
+				authors[i] = bibEscaper.Replace(a)
+			}
+			if err := writeRawBibField(w, "author", strings.Join(authors, " and ")); err != nil {
 				return err
 			}
 		}
@@ -36,13 +42,15 @@ func ExportBibTeX(papers []db.Paper, w io.Writer) error {
 				return err
 			}
 		}
+		// doi/url are verbatim fields: LaTeX escapes would show up literally,
+		// so only brace-breaking characters are percent-encoded.
 		if doi := ptr.Val(p.DOI); doi != "" {
-			if err := writeBibField(w, "doi", doi); err != nil {
+			if err := writeRawBibField(w, "doi", verbatimEscaper.Replace(doi)); err != nil {
 				return err
 			}
 		}
 		if u := ptr.Val(p.PdfURL); u != "" {
-			if err := writeBibField(w, "url", u); err != nil {
+			if err := writeRawBibField(w, "url", verbatimEscaper.Replace(u)); err != nil {
 				return err
 			}
 		}
@@ -61,9 +69,55 @@ func ExportBibTeX(papers []db.Paper, w io.Writer) error {
 	return nil
 }
 
+// bibEscaper escapes LaTeX special characters in free-text field values, so
+// remote metadata (e.g. an abstract with an unbalanced "}") can neither break
+// the entry nor inject extra fields.
+var bibEscaper = strings.NewReplacer(
+	`\`, `\textbackslash{}`,
+	`{`, `\{`,
+	`}`, `\}`,
+	`%`, `\%`,
+	`&`, `\&`,
+	`$`, `\$`,
+	`#`, `\#`,
+	`_`, `\_`,
+	`~`, `\textasciitilde{}`,
+	`^`, `\textasciicircum{}`,
+)
+
+// verbatimEscaper keeps doi/url values brace-balanced without LaTeX escapes.
+var verbatimEscaper = strings.NewReplacer(`\`, `%5C`, `{`, `%7B`, `}`, `%7D`)
+
+// writeBibField writes a free-text field, escaping its value.
 func writeBibField(w io.Writer, name, value string) error {
+	return writeRawBibField(w, name, bibEscaper.Replace(value))
+}
+
+// writeRawBibField writes a field whose value is already escaped.
+func writeRawBibField(w io.Writer, name, value string) error {
 	_, err := fmt.Fprintf(w, "  %s = {%s},\n", name, value)
 	return err
+}
+
+// uniqueKey returns key, or key with a letter suffix (a, b, c, …) if it was
+// already used in this export, and records the result in used.
+func uniqueKey(key string, used map[string]bool) string {
+	candidate := key
+	for n := 0; used[candidate]; n++ {
+		candidate = key + keySuffix(n)
+	}
+	used[candidate] = true
+	return candidate
+}
+
+// keySuffix maps 0→"a", 25→"z", 26→"aa", 27→"ab", …
+func keySuffix(n int) string {
+	s := ""
+	for n >= 0 {
+		s = string(rune('a'+n%26)) + s
+		n = n/26 - 1
+	}
+	return s
 }
 
 func bibtexKey(p db.Paper) string {

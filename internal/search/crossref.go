@@ -20,6 +20,8 @@ func NewCrossref(c *httpclient.Client) *Crossref {
 
 func (cr *Crossref) Name() string { return "crossref" }
 
+func (cr *Crossref) Language() string { return "en" }
+
 func (cr *Crossref) Search(ctx context.Context, query string, limit int, yearMin int) ([]RawPaper, error) {
 	base := cr.baseURL
 	if base == "" {

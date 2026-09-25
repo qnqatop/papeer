@@ -5,6 +5,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -94,16 +97,49 @@ func main() {
 		}
 	}
 
+	// SHA256SUMS is always served (the updater refuses to install without it).
+	// It is signed only when MOCK_SIGNING_KEY holds a base64 ed25519 private
+	// key (from `go run ./cmd/release-sign keygen`); the app must then be
+	// built with the matching updater.PublicKey.
+	sums := []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(assetData), assetName))
+	var sig []byte
+	if key := os.Getenv("MOCK_SIGNING_KEY"); key != "" {
+		raw, err := base64.StdEncoding.DecodeString(key)
+		if err != nil || len(raw) != ed25519.PrivateKeySize {
+			log.Fatalf("MOCK_SIGNING_KEY must be a base64 ed25519 private key")
+		}
+		sig = []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(ed25519.PrivateKey(raw), sums)) + "\n")
+		log.Printf("Signing SHA256SUMS with MOCK_SIGNING_KEY")
+	}
+
+	base := "http://localhost:" + port
+	assets := []githubAsset{
+		{Name: assetName, BrowserDownloadURL: base + assetURL, Size: int64(len(assetData))},
+		{Name: "SHA256SUMS", BrowserDownloadURL: base + "/dl/SHA256SUMS", Size: int64(len(sums))},
+	}
+	if sig != nil {
+		assets = append(assets, githubAsset{Name: "SHA256SUMS.sig", BrowserDownloadURL: base + "/dl/SHA256SUMS.sig", Size: int64(len(sig))})
+	}
+
 	release := githubRelease{
 		TagName: "v99.0.0",
-		HTMLURL: "http://localhost:" + port + "/release",
+		HTMLURL: base + "/release",
 		Body:    "## Test Release\n\nThis is a mock release for testing the auto-updater.\n\n### Changes\n- Everything is new!\n- Auto-updater works\n",
-		Assets: []githubAsset{
-			{Name: assetName, BrowserDownloadURL: "http://localhost:" + port + assetURL, Size: int64(len(assetData))},
-		},
+		Assets:  assets,
 	}
 
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("/dl/SHA256SUMS", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("→ GET %s", r.URL.Path)
+		w.Write(sums)
+	})
+	if sig != nil {
+		mux.HandleFunc("/dl/SHA256SUMS.sig", func(w http.ResponseWriter, r *http.Request) {
+			log.Printf("→ GET %s", r.URL.Path)
+			w.Write(sig)
+		})
+	}
 
 	mux.HandleFunc("/repos/qnqatop/papeer/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("→ GET %s", r.URL.Path)
@@ -130,7 +166,7 @@ func main() {
 	log.Println()
 	log.Println("Tip: use scripts/test-update.sh for the full macOS flow, or set")
 	log.Println("  PAPEER_REAL_APP=/path/to/NewApp.app (outside build/bin) to serve a")
-	log.Println("  real, launchable bundle, then run papeer with")
+	log.Println("  real, launchable bundle, then run papeer (built with -tags mockupdate) with")
 	log.Println("  PAPEER_UPDATE_API=http://localhost:" + port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }

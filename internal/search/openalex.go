@@ -22,6 +22,8 @@ func NewOpenAlex(c *httpclient.Client, email string) *OpenAlex {
 
 func (o *OpenAlex) Name() string { return "openalex" }
 
+func (o *OpenAlex) Language() string { return "en" }
+
 func (o *OpenAlex) Search(ctx context.Context, query string, limit int, yearMin int) ([]RawPaper, error) {
 	if limit > 50 {
 		limit = 50

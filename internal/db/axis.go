@@ -3,10 +3,12 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"slices"
+	"strings"
 )
 
 func (d *DB) ListAxes(profileID int64) ([]Axis, error) {
-	rows, err := d.Query(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position FROM axes WHERE profile_id=? ORDER BY position, id`, profileID)
+	rows, err := d.Query(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position, lang_scope FROM axes WHERE profile_id=? ORDER BY position, id`, profileID)
 	if err != nil {
 		return nil, err
 	}
@@ -15,7 +17,7 @@ func (d *DB) ListAxes(profileID int64) ([]Axis, error) {
 	var out []Axis
 	for rows.Next() {
 		var a Axis
-		if err := rows.Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position); err != nil {
+		if err := rows.Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position, &a.LangScope); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -40,8 +42,8 @@ func (d *DB) ListAxes(profileID int64) ([]Axis, error) {
 
 func (d *DB) GetAxis(id int64) (*Axis, error) {
 	var a Axis
-	err := d.QueryRow(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position FROM axes WHERE id=?`, id).
-		Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position)
+	err := d.QueryRow(`SELECT id, profile_id, axis_key, description, year_min, max_per_query, position, lang_scope FROM axes WHERE id=?`, id).
+		Scan(&a.ID, &a.ProfileID, &a.AxisKey, &a.Description, &a.YearMin, &a.MaxPerQuery, &a.Position, &a.LangScope)
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +58,22 @@ func (d *DB) GetAxis(id int64) (*Axis, error) {
 	return &a, nil
 }
 
+// LangScopes lists the supported axis language scopes.
+var LangScopes = []string{"en", "ru"}
+
+// NormalizeLangScope lowercases and trims an axis language scope, maps empty
+// to the "en" default, and rejects values outside LangScopes.
+func NormalizeLangScope(s string) (string, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return "en", nil
+	}
+	if !slices.Contains(LangScopes, s) {
+		return "", fmt.Errorf("invalid lang_scope %q (want one of %s)", s, strings.Join(LangScopes, ", "))
+	}
+	return s, nil
+}
+
 // SaveAxis creates or updates an axis with its queries and keywords.
 // If a.ID == 0, a new axis is created. Otherwise, it updates the existing one.
 // Queries and keywords are replaced entirely (delete + re-insert).
@@ -66,18 +84,67 @@ func (d *DB) SaveAxis(a *Axis) error {
 	}
 	defer tx.Rollback()
 
+	if err := saveAxisTx(tx, a); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// AppendAxes inserts new axes for a profile in a single transaction, placing
+// them after the profile's existing axes (positions continue from the current
+// max). Either all axes are saved or none — a duplicate axis_key aborts the
+// whole batch. Input IDs are ignored; IDs are filled in on success.
+func (d *DB) AppendAxes(profileID int64, axes []Axis) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var maxPos sql.NullInt64
+	if err := tx.QueryRow(`SELECT MAX(position) FROM axes WHERE profile_id=?`, profileID).Scan(&maxPos); err != nil {
+		return fmt.Errorf("max axis position: %w", err)
+	}
+	next := 0
+	if maxPos.Valid {
+		next = int(maxPos.Int64) + 1
+	}
+
+	for i := range axes {
+		axes[i].ID = 0
+		axes[i].ProfileID = profileID
+		axes[i].Position = next + i
+		if err := saveAxisTx(tx, &axes[i]); err != nil {
+			return fmt.Errorf("save axis %q: %w", axes[i].AxisKey, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// saveAxisTx creates or updates an axis with its queries and keywords inside
+// the given transaction.
+func saveAxisTx(tx *sql.Tx, a *Axis) error {
+	// Normalize lang_scope so the column's NOT NULL invariant holds, empty
+	// (unset by older callers/UI) maps to the English default, and a typo such
+	// as "fr" is rejected instead of silently matching no search provider.
+	scope, err := NormalizeLangScope(a.LangScope)
+	if err != nil {
+		return err
+	}
+	a.LangScope = scope
+
 	if a.ID == 0 {
 		// Insert new axis.
-		res, err := tx.Exec(`INSERT INTO axes (profile_id, axis_key, description, year_min, max_per_query, position) VALUES (?,?,?,?,?,?)`,
-			a.ProfileID, a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position)
+		res, err := tx.Exec(`INSERT INTO axes (profile_id, axis_key, description, year_min, max_per_query, position, lang_scope) VALUES (?,?,?,?,?,?,?)`,
+			a.ProfileID, a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position, a.LangScope)
 		if err != nil {
 			return fmt.Errorf("insert axis: %w", err)
 		}
 		a.ID, _ = res.LastInsertId()
 	} else {
 		// Update existing axis.
-		_, err := tx.Exec(`UPDATE axes SET axis_key=?, description=?, year_min=?, max_per_query=?, position=? WHERE id=?`,
-			a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position, a.ID)
+		_, err := tx.Exec(`UPDATE axes SET axis_key=?, description=?, year_min=?, max_per_query=?, position=?, lang_scope=? WHERE id=?`,
+			a.AxisKey, a.Description, a.YearMin, a.MaxPerQuery, a.Position, a.LangScope, a.ID)
 		if err != nil {
 			return fmt.Errorf("update axis: %w", err)
 		}
@@ -111,13 +178,27 @@ func (d *DB) SaveAxis(a *Axis) error {
 		a.Keywords[i].ID = id
 		a.Keywords[i].AxisID = a.ID
 	}
-
-	return tx.Commit()
+	return nil
 }
 
+// DeleteAxis removes an axis. papers.axis_id references axes(id) without
+// ON DELETE, so papers found by this axis are detached (axis_id=NULL) first;
+// otherwise foreign_keys=ON makes the delete fail. paper_axes, queries and
+// keywords rows cascade.
 func (d *DB) DeleteAxis(id int64) error {
-	_, err := d.Exec(`DELETE FROM axes WHERE id=?`, id)
-	return err
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE papers SET axis_id=NULL WHERE axis_id=?`, id); err != nil {
+		return fmt.Errorf("detach papers: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM axes WHERE id=?`, id); err != nil {
+		return fmt.Errorf("delete axis: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ReorderAxes updates the position field for axes in the given order.

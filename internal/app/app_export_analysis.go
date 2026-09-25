@@ -174,7 +174,14 @@ func (a *App) SaveAnalysisBundle(profileID int64, reviewMarkdown string, graphPN
 	if err != nil {
 		return "", fmt.Errorf("create bundle: %w", err)
 	}
-	defer f.Close()
+	// On any failure, don't leave a truncated/corrupt zip behind.
+	written := false
+	defer func() {
+		if !written {
+			f.Close()
+			os.Remove(path)
+		}
+	}()
 
 	zw := zip.NewWriter(f)
 	writeEntry := func(name string, data []byte) error {
@@ -214,6 +221,12 @@ func (a *App) SaveAnalysisBundle(profileID int64, reviewMarkdown string, graphPN
 
 	if err := zw.Close(); err != nil {
 		return "", fmt.Errorf("finalize bundle: %w", err)
+	}
+	written = true
+	// Close flushes the file; an error here means the zip may be incomplete.
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("write bundle: %w", err)
 	}
 	return path, nil
 }
