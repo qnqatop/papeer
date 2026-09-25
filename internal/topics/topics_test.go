@@ -2,6 +2,7 @@ package topics
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -295,6 +296,22 @@ func TestCluster_SingleClusterLayoutIsOrigin(t *testing.T) {
 func TestMakeLabel_EmptyTermsFallsBackToMisc(t *testing.T) {
 	if got := makeLabel(nil); got != "Miscellaneous" {
 		t.Errorf("makeLabel(nil) = %q, want Miscellaneous", got)
+	}
+}
+
+// makeLabel used the deprecated strings.Title; the x/text caser must title-case
+// the terms tokenize/topTerms produce (lowercase Latin/Cyrillic words and
+// space-joined bigrams) exactly the same way.
+func TestMakeLabel_TitleCaseMatchesStringsTitle(t *testing.T) {
+	for _, term := range []string{
+		"neural", "neural networks", "cold start", "нейронные сети", "ёлка",
+		"graph", "self attention", "mixedCase words", "x", "",
+	} {
+		//lint:ignore SA1019 reference behaviour for the replacement
+		want := strings.Title(term)
+		if got := makeLabel([]string{term}); got != want {
+			t.Errorf("makeLabel(%q) = %q, want %q (strings.Title)", term, got, want)
+		}
 	}
 }
 
