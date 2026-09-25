@@ -915,6 +915,10 @@ func (a *App) makeHTTPClient(email string) (*httpclient.Client, error) {
 	// per-host rate instead of each getting its own budget.
 	a.rateLimitsOnce.Do(func() { a.rateLimits = httpclient.NewRateLimitRegistry() })
 	client.UseRateLimitRegistry(a.rateLimits)
+	// URLs come from remote API responses: refuse loopback/private/metadata
+	// destinations. Headless Chrome uses the same proxy as the Go client.
+	client.EnableSSRFGuard()
+	download.SetChromeProxy(proxyURL)
 
 	if s2Key, _ := a.db.GetSetting("semantic_scholar_api_key"); s2Key != "" {
 		client.SetHostHeader("api.semanticscholar.org", "x-api-key", s2Key)

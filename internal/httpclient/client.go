@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -21,6 +20,9 @@ import (
 type StatusError struct {
 	Code int
 	Host string
+	// RetryAfter is the server's Retry-After hint (seconds form only, capped),
+	// or 0 when absent.
+	RetryAfter time.Duration
 }
 
 func (e *StatusError) Error() string {
@@ -103,7 +105,7 @@ func (c *Client) applyHostHeaders(req *http.Request) {
 
 // New creates a Client with the given email for polite pool APIs.
 func New(email string) *Client {
-	return &Client{
+	c := &Client{
 		http: &http.Client{
 			Timeout: 60 * time.Second,
 			Jar:     newCookieJar(),
@@ -111,6 +113,8 @@ func New(email string) *Client {
 		rateReg: NewRateLimitRegistry(),
 		email:   email,
 	}
+	c.http.CheckRedirect = c.checkRedirect
+	return c
 }
 
 // NewWithProxy creates a Client that routes all requests through the given proxy.
@@ -123,7 +127,7 @@ func NewWithProxy(email, proxyURL string) (*Client, error) {
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(parsed),
 	}
-	return &Client{
+	c := &Client{
 		http: &http.Client{
 			Timeout:   60 * time.Second,
 			Transport: transport,
@@ -131,12 +135,14 @@ func NewWithProxy(email, proxyURL string) (*Client, error) {
 		},
 		rateReg: NewRateLimitRegistry(),
 		email:   email,
-	}, nil
+	}
+	c.http.CheckRedirect = c.checkRedirect
+	return c, nil
 }
 
 // NewWithRegistry creates a Client with a shared rate limit registry.
 func NewWithRegistry(email string, reg *RateLimitRegistry) *Client {
-	return &Client{
+	c := &Client{
 		http: &http.Client{
 			Timeout: 60 * time.Second,
 			Jar:     newCookieJar(),
@@ -144,6 +150,8 @@ func NewWithRegistry(email string, reg *RateLimitRegistry) *Client {
 		rateReg: reg,
 		email:   email,
 	}
+	c.http.CheckRedirect = c.checkRedirect
+	return c
 }
 
 // DoJSON makes a GET request expecting JSON, with polite UA and rate limiting.
@@ -168,17 +176,22 @@ func (c *Client) DoJSON(ctx context.Context, rawURL string, result interface{}) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return &StatusError{Code: resp.StatusCode, Host: host}
+		return &StatusError{
+			Code:       resp.StatusCode,
+			Host:       host,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimited(resp, MaxAPIBodySize)
 	if err != nil {
 		return err
 	}
 	return json.Unmarshal(body, result)
 }
 
-// DoJSONWithRetry retries on 429/5xx errors with exponential backoff.
+// DoJSONWithRetry retries on 429/5xx errors with exponential backoff. A
+// Retry-After header (seconds form, capped at 60s) overrides the backoff.
 func (c *Client) DoJSONWithRetry(ctx context.Context, rawURL string, result interface{}, maxRetries int) error {
 	var lastErr error
 	backoff := []time.Duration{3 * time.Second, 8 * time.Second, 20 * time.Second}
@@ -192,6 +205,10 @@ func (c *Client) DoJSONWithRetry(ctx context.Context, rawURL string, result inte
 		// Only retry on rate limit or server errors.
 		if attempt < maxRetries && isRetryable(lastErr) {
 			delay := backoff[min(attempt, len(backoff)-1)]
+			var se *StatusError
+			if errors.As(lastErr, &se) && se.RetryAfter > 0 {
+				delay = se.RetryAfter
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -228,7 +245,7 @@ func (c *Client) DoText(ctx context.Context, rawURL string) (string, error) {
 		return "", &StatusError{Code: resp.StatusCode, Host: host}
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimited(resp, MaxAPIBodySize)
 	if err != nil {
 		return "", err
 	}
@@ -264,7 +281,7 @@ func (c *Client) PostJSON(ctx context.Context, rawURL string, body []byte, extra
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := readLimited(resp, MaxAPIBodySize)
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
@@ -349,9 +366,12 @@ func (c *Client) downloadFile(ctx context.Context, rawURL, referer string) ([]by
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readLimited(resp, MaxDownloadSize)
 		resp.Body.Close()
 		if err != nil {
+			if errors.Is(err, ErrBodyTooLarge) {
+				return nil, "", err // another UA won't make the file smaller
+			}
 			lastErr = err
 			continue
 		}
@@ -380,10 +400,5 @@ func hostFromURL(rawURL string) string {
 }
 
 func isRetryable(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "429") || strings.Contains(msg, "502") ||
-		strings.Contains(msg, "503") || strings.Contains(msg, "504")
+	return IsTransient(err)
 }

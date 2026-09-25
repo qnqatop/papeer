@@ -144,6 +144,19 @@ func (e *Engine) DownloadOne(ctx context.Context, paper db.Paper, email string, 
 	// Skip if already downloaded and valid.
 	if _, err := os.Stat(dest); err == nil {
 		if ValidatePDFFile(dest) == nil {
+			// Record an "ok" download row so GetPaperPDFPath can find the
+			// file — marking the paper downloaded alone is not enough.
+			var fileSize int64
+			if fi, err := os.Stat(dest); err == nil {
+				fileSize = fi.Size()
+			}
+			_ = e.database.SaveDownload(&db.Download{
+				PaperID:  paper.ID,
+				Source:   "cached",
+				Status:   "ok",
+				Filename: ptr.Ptr(filename),
+				FileSize: ptr.Ptr(fileSize),
+			})
 			e.onEvent(DownloadEvent{
 				Type:     "done",
 				PaperID:  paper.ID,
@@ -161,7 +174,7 @@ func (e *Engine) DownloadOne(ctx context.Context, paper db.Paper, email string, 
 	// Track URLs we have already fetched for this paper so two different
 	// sources don't waste time hitting the same MDPI/Springer landing page
 	// twice in a row.
-	triedURLs := make(map[string]string) // url → reason from the first try
+	triedURLs := make(map[string]error) // url → error from the first try
 
 	// Try each source in fallback order.
 	for _, src := range e.sources {
@@ -201,8 +214,9 @@ func (e *Engine) DownloadOne(ctx context.Context, paper db.Paper, email string, 
 		// hit and serve on the second; pre-Fix #1 the chain would die at
 		// "duplicate URL" and never recover. After Fix #1 the first attempt
 		// already exhausts Chrome, so a terminal failure stays terminal.
-		if prevReason, seen := triedURLs[result.PdfURL]; seen {
-			if !isTransientFailure(prevReason) {
+		if prevErr, seen := triedURLs[result.PdfURL]; seen {
+			if !isTransientFailure(prevErr) {
+				prevReason := prevErr.Error()
 				dl.Status = "fail"
 				dl.Reason = "duplicate URL: " + prevReason
 				_ = e.database.SaveDownload(dl)
@@ -225,7 +239,7 @@ func (e *Engine) DownloadOne(ctx context.Context, paper db.Paper, email string, 
 		// Try to fetch the PDF.
 		err := FetchPDF(ctx, e.client, result.PdfURL, dest)
 		if err != nil {
-			triedURLs[result.PdfURL] = err.Error()
+			triedURLs[result.PdfURL] = err
 			dl.Status = "fail"
 			dl.Reason = err.Error()
 			_ = e.database.SaveDownload(dl)
@@ -279,20 +293,10 @@ func (e *Engine) DownloadOne(ctx context.Context, paper db.Paper, email string, 
 // connection resets, 5xx — things that often clear on a fresh request. UA
 // blocks, 4xx responses, and PDF validation failures stay terminal because
 // Chrome (already tried in Fix #1) would have caught any recoverable case.
-func isTransientFailure(reason string) bool {
-	r := strings.ToLower(reason)
-	transientMarkers := []string{
-		"timeout", "timed out", "deadline exceeded",
-		"connection reset", "connection refused", "broken pipe", "eof",
-		"no such host", "i/o timeout", "tls handshake",
-		"http 500", "http 502", "http 503", "http 504", "http 408", "http 429",
-	}
-	for _, m := range transientMarkers {
-		if strings.Contains(r, m) {
-			return true
-		}
-	}
-	return false
+// Classification is by error type (see httpclient.IsTransient), not text, so
+// URLs containing "503" or "eof" don't count as transient.
+func isTransientFailure(err error) bool {
+	return httpclient.IsTransient(err)
 }
 
 // atomicCounter is a simple mutex-based counter for tracking progress.

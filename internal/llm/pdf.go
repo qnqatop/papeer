@@ -1,12 +1,24 @@
 package llm
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	gopdf "github.com/ledongthuc/pdf"
+)
+
+// Extraction limits: a paper rarely exceeds a few hundred pages, and the LLM
+// context can't use millions of characters anyway. They bound CPU/memory on
+// hostile or corrupted files.
+const (
+	maxPDFPages       = 500
+	maxExtractedChars = 2_000_000
+	pdftotextTimeout  = 60 * time.Second
 )
 
 // ExtractText extracts text from a PDF file.
@@ -57,7 +69,16 @@ func openPDF(path string) (*os.File, *gopdf.Reader, error) {
 	return f, r, nil
 }
 
-func extractWithGoLib(path string) (string, error) {
+// extractWithGoLib extracts text with ledongthuc/pdf. The library panics on
+// many malformed inputs (in NewReader, NumPage, Page), so panics are turned
+// into errors and the caller falls back to pdftotext.
+func extractWithGoLib(path string) (text string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			text, err = "", fmt.Errorf("pdf parser panic: %v", r)
+		}
+	}()
+
 	f, r, err := openPDF(path)
 	if err != nil {
 		return "", err
@@ -65,8 +86,8 @@ func extractWithGoLib(path string) (string, error) {
 	defer f.Close()
 
 	var buf strings.Builder
-	totalPage := r.NumPage()
-	for pageNum := 1; pageNum <= totalPage; pageNum++ {
+	totalPage := min(r.NumPage(), maxPDFPages)
+	for pageNum := 1; pageNum <= totalPage && buf.Len() < maxExtractedChars; pageNum++ {
 		page := r.Page(pageNum)
 		if page.V.IsNull() {
 			continue
@@ -78,7 +99,29 @@ func extractWithGoLib(path string) (string, error) {
 		buf.WriteString(text)
 		buf.WriteString("\n")
 	}
-	return buf.String(), nil
+	return truncateText(buf.String(), maxExtractedChars), nil
+}
+
+// truncateText cuts s to at most n bytes without splitting a UTF-8 sequence.
+func truncateText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
+}
+
+// cappedBuffer keeps the first max bytes written and silently discards the
+// rest, so a huge pdftotext output can't exhaust memory.
+type cappedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room > 0 {
+		c.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
 }
 
 func extractWithPdftotext(path string) (string, error) {
@@ -87,10 +130,13 @@ func extractWithPdftotext(path string) (string, error) {
 		return "", fmt.Errorf("pdftotext not found: %w", err)
 	}
 
-	cmd := exec.Command("pdftotext", "-layout", path, "-")
-	out, err := cmd.Output()
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), pdftotextTimeout)
+	defer cancel()
+	out := &cappedBuffer{max: maxExtractedChars}
+	cmd := exec.CommandContext(ctx, "pdftotext", "-layout", "-l", fmt.Sprint(maxPDFPages), path, "-")
+	cmd.Stdout = out
+	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("pdftotext: %w", err)
 	}
-	return string(out), nil
+	return truncateText(out.buf.String(), maxExtractedChars), nil
 }

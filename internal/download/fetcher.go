@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -157,12 +158,13 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	// Step 1: download the URL.
 	data, _, err := download(rawURL)
 	if err != nil {
-		// HTTP-level block (403 from ACM/IEEE/Elsevier after all UA strategies,
-		// 4xx/5xx with no body, network reset). DownloadFile gives us nothing
+		// HTTP-level bot wall (403 from ACM/IEEE/Elsevier after all UA
+		// strategies, 429/503 challenge pages). DownloadFile gives us nothing
 		// to validate, so the regular HTML→Chrome path never triggers. Try
 		// Chrome here as a last resort — it carries cookies and a real JS
-		// runtime and frequently slips past UA-based bot walls.
-		if ChromeAvailable() {
+		// runtime and frequently slips past UA-based bot walls. Other errors
+		// (404, network failures, bad schemes) won't be fixed by a browser.
+		if isBotWallError(err) && isHTTPURL(rawURL) && ChromeAvailable() {
 			if chromeErr := FetchPDFWithChrome(ctx, rawURL, dest); chromeErr == nil {
 				return nil
 			} else if !errors.Is(chromeErr, ErrChromeNotFound) {
@@ -186,10 +188,10 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 		}
 		ok, solveErr := solveAkamaiInterstitial(ctx, client, rawURL, data)
 		if solveErr != nil {
-			return fmt.Errorf("Akamai bypass for %s failed (round %d): %w", rawURL, round+1, solveErr)
+			return fmt.Errorf("akamai bypass for %s failed (round %d): %w", rawURL, round+1, solveErr)
 		}
 		if !ok {
-			return fmt.Errorf("Akamai bypass for %s rejected by server (round %d)", rawURL, round+1)
+			return fmt.Errorf("akamai bypass for %s rejected by server (round %d)", rawURL, round+1)
 		}
 		// Brief pause so the new ak_bmsc cookie registers on Akamai edge
 		// before we re-fetch — the JS interstitial does the same.
@@ -249,7 +251,7 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	// detection is left earlier in the flow so we still skip the cheap
 	// HTML-scanning round when we can prove it's a bot wall.
 	if err := ValidatePDF(data); err != nil {
-		if looksLikeHTML(data) && ChromeAvailable() {
+		if looksLikeHTML(data) && isHTTPURL(rawURL) && ChromeAvailable() {
 			if chromeErr := FetchPDFWithChrome(ctx, rawURL, dest); chromeErr == nil {
 				return nil
 			} else if !errors.Is(chromeErr, ErrChromeNotFound) {
@@ -259,7 +261,7 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 		return fmt.Errorf("PDF validation failed for %s: %w", rawURL, err)
 	}
 
-	if err := os.WriteFile(dest, data, 0o644); err != nil {
+	if err := writeFileAtomic(dest, data); err != nil {
 		return fmt.Errorf("writing %s: %w", dest, err)
 	}
 
@@ -286,6 +288,50 @@ func isCyberLeninkaURL(rawURL string) bool {
 	}
 	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 	return host == "cyberleninka.ru"
+}
+
+// isBotWallError reports whether a DownloadFile error looks like a bot wall
+// that a real browser might get past: 403, or a 429/503 challenge.
+func isBotWallError(err error) bool {
+	var se *httpclient.StatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code == 403 || se.Code == 429 || se.Code == 503
+}
+
+// isHTTPURL reports whether rawURL is an absolute http(s) URL.
+func isHTTPURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	s := strings.ToLower(u.Scheme)
+	return s == "http" || s == "https"
+}
+
+// writeFileAtomic writes data to a temp file next to dest and renames it
+// into place, so a crash or concurrent reader never sees a half-written PDF.
+func writeFileAtomic(dest string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".papeer-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmpName, 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmpName, dest)
+	}
+	if err != nil {
+		_ = os.Remove(tmpName)
+	}
+	return err
 }
 
 // isPDFEndpoint reports whether the URL is most likely the publisher's PDF
