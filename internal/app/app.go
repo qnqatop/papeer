@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -11,6 +10,7 @@ import (
 	"github.com/qnqatop/papeer/internal/updater"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -105,16 +105,19 @@ type App struct {
 	ctx           context.Context
 	db            *db.DB
 	updater       *updater.Updater
-	cancelMu      sync.Mutex         // guards cancel
-	cancel        context.CancelFunc // for cancelling search/download
-	radarStop     chan struct{}      // close to stop the radar ticker
+	cancelMu      sync.Mutex                    // guards cancels, cancelSeq
+	cancels       map[uint64]context.CancelFunc // active long-running ops by token
+	cancelSeq     uint64
+	radarStop     chan struct{}      // close to stop the radar ticker; radarMu guards radar* fields
+	radarCancel   context.CancelFunc // cancels an in-flight radar run
+	radarStopped  bool               // set by stopRadar; radar must not (re)start
 	radarMu       sync.Mutex
 	recMu         sync.Mutex // guards RecalculateAIScores
 	summaryMu     sync.Mutex // guards summary generation
 	updateMu      sync.Mutex // guards pendingUpdate
 	pendingUpdate *updater.UpdateInfo
-	dlPaperMu  sync.Mutex
-	dlPaperSet map[int64]bool // guards against duplicate single-paper downloads
+	dlPaperMu     sync.Mutex
+	dlPaperSet    map[int64]bool // guards against duplicate single-paper downloads
 }
 
 // LLM-related errors.
@@ -219,14 +222,14 @@ func (a *App) Startup(ctx context.Context) {
 	a.backfillLLMProfile()
 
 	// Start radar in background after a delay, if enabled.
-	go a.startRadarIfEnabled()
+	a.safeGo("radar", a.startRadarIfEnabled)
 
 	// Notify frontend if any profile lacks a valid contact email — search and
 	// downloads will be blocked until the user updates it.
-	go a.notifyProfilesNeedingEmail()
+	a.safeGo("notifyProfilesNeedingEmail", a.notifyProfilesNeedingEmail)
 
 	// Passively check for a newer release (major/minor only) unless disabled.
-	go a.checkForUpdatesPassive()
+	a.safeGo("checkForUpdatesPassive", a.checkForUpdatesPassive)
 }
 
 // checkForUpdatesPassive runs once on startup: if auto-update checking is
@@ -546,13 +549,13 @@ func (a *App) UpdatePaperStatus(id int64, status string) error {
 
 	// Если статус изменился на approved или rejected, запускаем пересчет в фоне
 	if err == nil && (status == "approved" || status == "rejected") {
-		go func() {
+		a.safeGo("RecalculateAIScores", func() {
 			// Получаем статью, чтобы узнать её AxisID
 			paper, err := a.db.GetPaper(id)
 			if err == nil && paper.AxisID != nil {
 				a.RecalculateAIScores(paper.ProfileID, *paper.AxisID)
 			}
-		}()
+		})
 	}
 	return err
 }
@@ -574,8 +577,12 @@ func (a *App) RecalculateAIScores(profileID int64, axisID int64) {
 		AxisID:    &axisID,
 		Limit:     10000,
 	})
-	if err != nil || len(result.Papers) == 0 {
-		sendLog(fmt.Sprintf("❌ Ошибка SQL: %v (Найдено статей: %d), axes= %d", err, len(result.Papers), axisID))
+	if err != nil {
+		sendLog(fmt.Sprintf("❌ Ошибка SQL: %v, axes= %d", err, axisID))
+		return
+	}
+	if len(result.Papers) == 0 {
+		sendLog(fmt.Sprintf("⚠️ В оси нет статей (Найдено статей: 0), axes= %d", axisID))
 		return
 	}
 
@@ -642,6 +649,18 @@ func (a *App) ApproveByScore(profileID int64, minScore int) (int64, error) {
 // SearchAxis runs search for a single axis across all providers.
 // Emits "search:progress" events to the frontend.
 func (a *App) SearchAxis(profileID int64, axisID int64) (int, error) {
+	ctx, cancel := context.WithCancel(a.ctx)
+	token := a.setCancel(cancel)
+	defer func() {
+		cancel()
+		a.clearCancel(token)
+	}()
+	return a.searchAxis(ctx, profileID, axisID)
+}
+
+// searchAxis runs the search for one axis under ctx (cancelled via
+// CancelOperation by the caller that registered it).
+func (a *App) searchAxis(ctx context.Context, profileID int64, axisID int64) (int, error) {
 	profile, err := a.db.GetProfile(profileID)
 	if err != nil {
 		return 0, fmt.Errorf("profile %d: %w", profileID, err)
@@ -666,9 +685,6 @@ func (a *App) SearchAxis(profileID int64, axisID int64) (int, error) {
 		search.NewCrossref(client),
 		search.NewArXiv(client),
 	}
-
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.setCancel(cancel)
 
 	onEvent := func(e search.SearchEvent) {
 		runtime.EventsEmit(a.ctx, "search:progress", e)
@@ -695,9 +711,6 @@ func (a *App) SearchAxis(profileID int64, axisID int64) (int, error) {
 		YearMin:     yearMin,
 		MaxPerQuery: maxPerQuery,
 	})
-
-	cancel()
-	a.clearCancel()
 	return count, err
 }
 
@@ -716,9 +729,25 @@ func (a *App) SearchAllAxes(profileID int64) (int, error) {
 		return 0, err
 	}
 
+	// One cancellable context for the whole run: CancelOperation stops the
+	// remaining axes instead of only the one currently being searched.
+	ctx, cancel := context.WithCancel(a.ctx)
+	token := a.setCancel(cancel)
+	defer func() {
+		cancel()
+		a.clearCancel(token)
+	}()
+
 	total := 0
 	for _, axis := range axes {
-		count, err := a.SearchAxis(profileID, axis.ID)
+		if ctx.Err() != nil {
+			break
+		}
+		count, err := a.searchAxis(ctx, profileID, axis.ID)
+		if ctx.Err() != nil {
+			total += count // papers saved before the cancel are kept
+			break
+		}
 		if err != nil {
 			runtime.EventsEmit(a.ctx, "search:error", map[string]string{
 				"axis":  axis.AxisKey,
@@ -773,7 +802,7 @@ func (a *App) DownloadApproved(profileID int64) error {
 	dlSources := buildDownloadSources(profile)
 
 	ctx, cancel := context.WithCancel(a.ctx)
-	a.setCancel(cancel)
+	token := a.setCancel(cancel)
 
 	onEvent := func(e download.DownloadEvent) {
 		runtime.EventsEmit(a.ctx, "download:progress", e)
@@ -781,12 +810,14 @@ func (a *App) DownloadApproved(profileID int64) error {
 
 	engine := download.NewEngine(client, a.db, dlSources, profile.PdfDir, 4, onEvent)
 
-	go func() {
+	a.safeGo("DownloadApproved", func() {
+		defer func() {
+			cancel()
+			a.clearCancel(token)
+			runtime.EventsEmit(a.ctx, "download:done", nil)
+		}()
 		engine.DownloadAll(ctx, papers, profile.Email)
-		cancel()
-		a.clearCancel()
-		runtime.EventsEmit(a.ctx, "download:done", nil)
-	}()
+	})
 
 	return nil
 }
@@ -802,6 +833,20 @@ func (a *App) DownloadPaper(paperID int64) error {
 	}
 	a.dlPaperSet[paperID] = true
 	a.dlPaperMu.Unlock()
+
+	// Release the guard on every exit path; once the background download
+	// starts, it owns the guard and releases it when done.
+	started := false
+	release := func() {
+		a.dlPaperMu.Lock()
+		delete(a.dlPaperSet, paperID)
+		a.dlPaperMu.Unlock()
+	}
+	defer func() {
+		if !started {
+			release()
+		}
+	}()
 
 	paper, err := a.db.GetPaper(paperID)
 	if err != nil {
@@ -831,7 +876,7 @@ func (a *App) DownloadPaper(paperID int64) error {
 	dlSources := buildDownloadSources(profile)
 
 	ctx, cancel := context.WithCancel(a.ctx)
-	a.setCancel(cancel)
+	token := a.setCancel(cancel)
 
 	onEvent := func(e download.DownloadEvent) {
 		runtime.EventsEmit(a.ctx, "download:progress", e)
@@ -839,15 +884,16 @@ func (a *App) DownloadPaper(paperID int64) error {
 
 	engine := download.NewEngine(client, a.db, dlSources, profile.PdfDir, 4, onEvent)
 
-	go func() {
+	started = true
+	a.safeGo("DownloadPaper", func() {
+		defer func() {
+			cancel()
+			a.clearCancel(token)
+			release()
+			runtime.EventsEmit(a.ctx, "download:done", nil)
+		}()
 		engine.DownloadOne(ctx, *paper, profile.Email, 1, 1)
-		cancel()
-		a.clearCancel()
-		runtime.EventsEmit(a.ctx, "download:done", nil)
-		a.dlPaperMu.Lock()
-		delete(a.dlPaperSet, paperID)
-		a.dlPaperMu.Unlock()
-	}()
+	})
 
 	return nil
 }
@@ -918,28 +964,59 @@ func (a *App) makeHTTPClient(email string) (*httpclient.Client, error) {
 	return client, nil
 }
 
-// CancelOperation cancels the current long-running search or download.
+// CancelOperation cancels every active long-running operation (search,
+// download, citation fetch, review draft, radar run).
 func (a *App) CancelOperation() {
 	a.cancelMu.Lock()
-	cancel := a.cancel
+	cancels := make([]context.CancelFunc, 0, len(a.cancels))
+	for _, c := range a.cancels {
+		cancels = append(cancels, c)
+	}
 	a.cancelMu.Unlock()
-	if cancel != nil {
-		cancel()
+	for _, c := range cancels {
+		c()
 	}
 }
 
-// setCancel stores the cancel func for the current long-running operation.
-func (a *App) setCancel(c context.CancelFunc) {
+// setCancel registers the cancel func of a long-running operation and returns
+// a token for clearCancel. Several operations may be active at once.
+func (a *App) setCancel(c context.CancelFunc) uint64 {
 	a.cancelMu.Lock()
-	a.cancel = c
+	defer a.cancelMu.Unlock()
+	if a.cancels == nil {
+		a.cancels = make(map[uint64]context.CancelFunc)
+	}
+	a.cancelSeq++
+	a.cancels[a.cancelSeq] = c
+	return a.cancelSeq
+}
+
+// clearCancel unregisters the operation identified by token once it finishes;
+// other operations' cancel funcs are left intact.
+func (a *App) clearCancel(token uint64) {
+	a.cancelMu.Lock()
+	delete(a.cancels, token)
 	a.cancelMu.Unlock()
 }
 
-// clearCancel clears the stored cancel func once an operation finishes.
-func (a *App) clearCancel() {
-	a.cancelMu.Lock()
-	a.cancel = nil
-	a.cancelMu.Unlock()
+// logPanic reports a recovered panic; a variable so tests without a Wails
+// runtime context can replace it.
+var logPanic = func(ctx context.Context, format string, args ...interface{}) {
+	runtime.LogErrorf(ctx, format, args...)
+}
+
+// safeGo runs fn in a new goroutine. A panic in fn is recovered and logged
+// instead of crashing the whole app (an unrecovered panic in any goroutine
+// terminates the process). Deferred calls inside fn still run.
+func (a *App) safeGo(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logPanic(a.ctx, "panic in %s: %v\n%s", name, r, debug.Stack())
+			}
+		}()
+		fn()
+	}()
 }
 
 // ── Radar / Monitoring ───────────────────────────────────
@@ -950,6 +1027,12 @@ const radarTagColor = "#f97316" // orange
 // It searches with a small limit (3) and recent year filter, then tags
 // genuinely new papers with the "monitoring" tag. Returns the count of new papers.
 func (a *App) RunRadar(profileID int64) (int, error) {
+	return a.runRadar(a.ctx, profileID)
+}
+
+// runRadar is RunRadar under a parent context, so the scheduled radar can be
+// interrupted by stopRadar on shutdown.
+func (a *App) runRadar(parent context.Context, profileID int64) (int, error) {
 	profile, err := a.db.GetProfile(profileID)
 	if err != nil {
 		return 0, fmt.Errorf("profile %d: %w", profileID, err)
@@ -991,11 +1074,18 @@ func (a *App) RunRadar(profileID int64) (int, error) {
 
 	engine := search.NewEngine(a.db, providers, onEvent)
 
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.setCancel(cancel)
+	ctx, cancel := context.WithCancel(parent)
+	token := a.setCancel(cancel)
+	defer func() {
+		cancel()
+		a.clearCancel(token)
+	}()
 
 	totalProcessed := 0
 	for _, axis := range axes {
+		if ctx.Err() != nil {
+			break // cancelled: still tag what was found so far
+		}
 		if len(axis.Queries) == 0 {
 			continue
 		}
@@ -1028,9 +1118,6 @@ func (a *App) RunRadar(profileID int64) (int, error) {
 		a.db.SetAxisRadarRun(axis.ID, time.Now())
 	}
 
-	cancel()
-	a.clearCancel()
-
 	// Find genuinely new papers (INSERT, not UPDATE during merge).
 	newIDs, err := a.db.GetPaperIDsAfterTime(profileID, startTime)
 	if err != nil {
@@ -1044,14 +1131,11 @@ func (a *App) RunRadar(profileID int64) (int, error) {
 			runtime.LogErrorf(ctx, "radar: ensure tag: %v", err)
 		} else {
 			for _, paperID := range newIDs {
-				existing, _ := a.db.ListPaperTags(paperID)
-				allTagIDs := []int64{tagID}
-				for _, t := range existing {
-					if t.TagID != tagID {
-						allTagIDs = append(allTagIDs, t.TagID)
-					}
+				// Add the tag without a read-modify-write of the paper's
+				// tags, so a failed read can't wipe its existing tags.
+				if err := a.db.AddTagToPaper(tagID, paperID); err != nil {
+					runtime.LogErrorf(ctx, "radar: tag paper %d: %v", paperID, err)
 				}
-				a.db.SetPaperTags(paperID, allTagIDs)
 			}
 		}
 	}
@@ -1066,27 +1150,57 @@ func (a *App) RunRadar(profileID int64) (int, error) {
 	return len(newIDs), nil
 }
 
-// startRadarIfEnabled reads settings and starts the radar with the configured frequency.
-func (a *App) startRadarIfEnabled() {
-	time.Sleep(10 * time.Second) // let UI settle
+// radarStartDelay lets the UI settle before the first radar run; a variable
+// so tests don't have to wait.
+var radarStartDelay = 10 * time.Second
 
+// initRadar registers the stop channel and cancellable context of the radar
+// scheduler. It returns ok=false if stopRadar already ran (app shutting down).
+// radarMu is held only here and in stopRadar — never across a radar run —
+// so stopRadar can't block behind the scheduler.
+func (a *App) initRadar() (stop <-chan struct{}, ctx context.Context, ok bool) {
 	a.radarMu.Lock()
 	defer a.radarMu.Unlock()
+	if a.radarStopped || a.radarStop != nil {
+		return nil, nil, false
+	}
+	ch := make(chan struct{})
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.radarStop = ch
+	a.radarCancel = cancel
+	return ch, ctx, true
+}
+
+// startRadarIfEnabled reads settings and starts the radar with the configured frequency.
+func (a *App) startRadarIfEnabled() {
+	stop, ctx, ok := a.initRadar()
+	if !ok {
+		return
+	}
+
+	select {
+	case <-time.After(radarStartDelay): // let UI settle
+	case <-stop:
+		return
+	}
 
 	enabled, _ := a.db.GetSetting("enable_radar")
 	if enabled != "true" {
 		return
 	}
 
-	// Run immediately once, then schedule periodic runs.
-	profiles, err := a.db.ListProfiles()
-	if err != nil {
-		return
-	}
-
 	runAllProfiles := func() {
+		profiles, err := a.db.ListProfiles()
+		if err != nil {
+			return
+		}
 		for _, p := range profiles {
-			count, err := a.RunRadar(p.ID)
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			count, err := a.runRadar(ctx, p.ID)
 			if err != nil {
 				runtime.LogErrorf(a.ctx, "radar: profile %q: %v", p.Name, err)
 			} else if count > 0 {
@@ -1095,6 +1209,7 @@ func (a *App) startRadarIfEnabled() {
 		}
 	}
 
+	// Run immediately once, then schedule periodic runs.
 	runAllProfiles()
 
 	freq, _ := a.db.GetSetting("radar_frequency")
@@ -1107,27 +1222,37 @@ func (a *App) startRadarIfEnabled() {
 		return
 	}
 
-	a.radarStop = make(chan struct{})
-	ticker := time.NewTicker(duration)
+	radarLoop(stop, duration, runAllProfiles)
+}
+
+// radarLoop calls run every interval until stop is closed.
+func radarLoop(stop <-chan struct{}, interval time.Duration, run func()) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			runAllProfiles()
-		case <-a.radarStop:
+			run()
+		case <-stop:
 			return
 		}
 	}
 }
 
-// stopRadar stops any running radar ticker.
+// stopRadar stops the radar scheduler and cancels an in-flight radar run.
+// It never waits for the scheduler, so it can't hang app shutdown.
 func (a *App) stopRadar() {
 	a.radarMu.Lock()
 	defer a.radarMu.Unlock()
+	a.radarStopped = true
 	if a.radarStop != nil {
 		close(a.radarStop)
 		a.radarStop = nil
+	}
+	if a.radarCancel != nil {
+		a.radarCancel()
+		a.radarCancel = nil
 	}
 }
 
@@ -1231,22 +1356,31 @@ func (a *App) ImportYAML(profileID int64) (int, error) {
 		return 0, nil // cancelled
 	}
 
-	data, err := os.ReadFile(path)
+	return a.importYAMLFile(profileID, path)
+}
+
+// importYAMLFile imports axes from a YAML file at path. All axes are saved in
+// one transaction after the profile's existing axes: a failure (e.g. a
+// duplicate axis_key) imports nothing.
+func (a *App) importYAMLFile(profileID int64, path string) (int, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return 0, fmt.Errorf("read file: %w", err)
 	}
+	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.Size() > export.MaxYAMLImportSize {
+		return 0, export.ErrYAMLTooLarge
+	}
 
-	axes, err := export.ImportAxesFromYAML(bytes.NewReader(data), profileID)
+	// ImportAxesFromYAML also caps what it reads, in case the file grows.
+	axes, err := export.ImportAxesFromYAML(f, profileID)
 	if err != nil {
 		return 0, err
 	}
 
-	for i := range axes {
-		if err := a.db.SaveAxis(&axes[i]); err != nil {
-			return i, fmt.Errorf("save axis %q: %w", axes[i].AxisKey, err)
-		}
+	if err := a.db.AppendAxes(profileID, axes); err != nil {
+		return 0, err
 	}
-
 	return len(axes), nil
 }
 
@@ -1558,6 +1692,9 @@ func (a *App) ListLLMProfiles() ([]LLMProfileView, error) {
 // If the keychain is unavailable the profile is still created (key can be set
 // later) and a soft error is returned.
 func (a *App) CreateLLMProfile(profile db.LLMProfile, apiKey string) (*LLMProfileView, error) {
+	if err := validateLLMBaseURL(profile.BaseURL); err != nil {
+		return nil, err
+	}
 	wantActive := profile.IsActive
 	profile.IsActive = false // activation is handled transactionally below
 	if err := a.db.CreateLLMProfile(&profile); err != nil {
@@ -1588,7 +1725,27 @@ func (a *App) CreateLLMProfile(profile db.LLMProfile, apiKey string) (*LLMProfil
 // UpdateLLMProfile updates a profile. An empty apiKey means "leave the stored
 // key unchanged"; a non-empty apiKey replaces it. If the input is_active is set
 // the profile is (re)activated.
+//
+// If the base URL's origin (scheme+host+port) changes while a key is stored,
+// a new apiKey is required: otherwise the stored key would be sent to a host
+// the user never entered it for.
 func (a *App) UpdateLLMProfile(profile db.LLMProfile, apiKey string) (*LLMProfileView, error) {
+	if err := validateLLMBaseURL(profile.BaseURL); err != nil {
+		return nil, err
+	}
+	if apiKey == "" {
+		old, err := a.db.GetLLMProfile(profile.ID)
+		if err != nil {
+			return nil, err
+		}
+		if llmOrigin(old.BaseURL) != llmOrigin(profile.BaseURL) {
+			// A keychain error means we can't tell whether a key is stored:
+			// refuse rather than risk re-targeting it.
+			if key, err := llm.GetKey(profile.ID); err != nil || key != "" {
+				return nil, ErrLLMKeyReentry
+			}
+		}
+	}
 	if err := a.db.UpdateLLMProfile(&profile); err != nil {
 		return nil, err
 	}
@@ -1634,6 +1791,10 @@ func (a *App) TestLLMProfile(id int64) error {
 	if err != nil {
 		return err
 	}
+	// Profiles saved before base URL validation existed may still be http.
+	if err := validateLLMBaseURL(p.BaseURL); err != nil {
+		return err
+	}
 	key, err := llm.GetKey(id)
 	if err != nil {
 		return err
@@ -1643,6 +1804,9 @@ func (a *App) TestLLMProfile(id int64) error {
 
 // TestLLMProfileDraft tests an unsaved profile draft (form "Test connection").
 func (a *App) TestLLMProfileDraft(baseURL, apiKey, model string) error {
+	if err := validateLLMBaseURL(baseURL); err != nil {
+		return err
+	}
 	return a.pingLLM(apiKey, baseURL, model, 0.2)
 }
 
@@ -1735,14 +1899,16 @@ func (a *App) GenerateSummary(paperID int64, model string) (*db.Summary, error) 
 
 	prompt := a.summaryPrompt(profile)
 
-	// Create record with "generating" status
+	// Create record with "generating" status. Upsert: a previous attempt may
+	// have left an 'error' (or 'pending') row for this paper+model, and
+	// UNIQUE(paper_id, model) would reject a plain insert.
 	s := &db.Summary{
 		PaperID:  paperID,
 		Provider: profile.Name,
 		Model:    chosenModel,
 		Status:   "generating",
 	}
-	if err := a.db.CreateSummary(s); err != nil {
+	if err := a.db.UpsertSummary(s); err != nil {
 		a.summaryMu.Unlock()
 		return nil, err
 	}
@@ -1809,18 +1975,35 @@ func (a *App) summaryPrompt(profile *db.LLMProfile) string {
 	return defaultSummaryPrompt
 }
 
+// summaryTimeout bounds a single summary LLM call.
+const summaryTimeout = 5 * time.Minute
+
 // runSummary extracts the PDF text, calls the LLM, and finalizes the summary
 // record. Runs outside the summary lock.
-func (a *App) runSummary(s *db.Summary, client *llm.OpenAIClient, pdfPath, prompt, model string) (*db.Summary, error) {
+func (a *App) runSummary(s *db.Summary, client llm.Client, pdfPath, prompt, model string) (out *db.Summary, err error) {
+	// A panic (e.g. in PDF parsing) must not leave the row in 'generating'.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("summary generation failed: %v", r)
+			out = nil
+			a.db.UpdateSummary(&db.Summary{ID: s.ID, Status: "error", ErrorMsg: err.Error()})
+		}
+	}()
+
 	text, err := llm.ExtractText(pdfPath)
 	if err != nil {
 		a.db.UpdateSummary(&db.Summary{ID: s.ID, Status: "error", ErrorMsg: err.Error()})
 		return nil, err
 	}
 
+	// Bound the LLM call so a hung endpoint can't keep the summary in
+	// 'generating' indefinitely.
+	ctx, cancel := context.WithTimeout(a.ctx, summaryTimeout)
+	defer cancel()
+
 	// Summary is markdown, so use Complete (temperature from profile), not
 	// CompleteDeterministic (which imposes response_format json_object).
-	result, err := client.Complete(a.ctx, prompt, text)
+	result, err := client.Complete(ctx, prompt, text)
 	if err != nil {
 		a.db.UpdateSummary(&db.Summary{ID: s.ID, Status: "error", ErrorMsg: err.Error()})
 		return nil, err
@@ -1862,14 +2045,42 @@ func (a *App) GetPaperPDFPath(paperID int64) (string, error) {
 	return a.db.GetPaperPDFPath(paperID)
 }
 
-// OpenSystemPDF opens the downloaded PDF in the system default viewer.
-// Uses runtime.BrowserOpenURL which is cross-platform (macOS, Windows, Linux).
+// OpenSystemPDF opens the downloaded PDF in the system default viewer via the
+// platform opener (xdg-open / open / rundll32, see app_open_*.go).
+// runtime.BrowserOpenURL can't be used: Wails rejects file:// URLs silently.
 func (a *App) OpenSystemPDF(paperID int64) error {
 	path, err := a.db.GetPaperPDFPath(paperID)
 	if err != nil {
 		return err
 	}
-	runtime.BrowserOpenURL(a.ctx, "file://"+path)
+	if err := validatePDFPath(path); err != nil {
+		return err
+	}
+	cmd := openFileCommand(path)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("open pdf: %w", err)
+	}
+	// Reap the opener process; its exit status is irrelevant.
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
+// validatePDFPath checks that path is an absolute path to an existing .pdf
+// file before it is handed to the OS opener.
+func validatePDFPath(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("pdf path is not absolute: %q", path)
+	}
+	if !strings.EqualFold(filepath.Ext(path), ".pdf") {
+		return fmt.Errorf("not a pdf file: %q", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("pdf file not found: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("pdf path is not a regular file: %q", path)
+	}
 	return nil
 }
 
