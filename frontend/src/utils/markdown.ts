@@ -17,7 +17,7 @@ export function renderMarkdown(text: string): string {
   // Block math $$...$$ -> centered block
   html = html.replace(/\$\$([^$]+)\$\$/g, '<div class="math-block">$1</div>')
   // Inline math $...$ -> code-styled span
-  html = html.replace(/\$([^$]+)\$/g, '<code class="math-inline">$1</code>')
+  html = html.replace(/\$([^$\n]+)\$/g, '<code class="math-inline">$1</code>')
 
   // Tables: convert | ... | blocks to HTML tables
   html = html.replace(/((?:^\|.+\|$\n?)+)/gm, (block: string) => {

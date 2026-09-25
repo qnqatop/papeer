@@ -26,6 +26,15 @@ export interface DownloadEvent {
   filename: string
 }
 
+// Upper bound on retained progress events so long runs don't grow memory
+// (and re-render cost of the logs) without limit.
+export const MAX_PROGRESS_EVENTS = 500
+
+function pushCapped<T>(list: T[], item: T) {
+  list.push(item)
+  if (list.length > MAX_PROGRESS_EVENTS) list.splice(0, list.length - MAX_PROGRESS_EVENTS)
+}
+
 export type NotifyFn = (type: 'success' | 'error' | 'warning' | 'info', content: string) => void
 
 export const useProgressStore = defineStore('progress', () => {
@@ -38,6 +47,10 @@ export const useProgressStore = defineStore('progress', () => {
   const reviewLabel = ref('')
   const searchEvents = ref<SearchEvent[]>([])
   const downloadEvents = ref<DownloadEvent[]>([])
+  // Totals for the current download run, kept separately because
+  // downloadEvents is capped and may no longer hold every done/fail event.
+  const downloadDone = ref(0)
+  const downloadFailed = ref(0)
   const current = ref(0)
   const total = ref(0)
   const lastEvent = ref<string>('')
@@ -68,6 +81,8 @@ export const useProgressStore = defineStore('progress', () => {
 
   function resetDownload() {
     downloadEvents.value = []
+    downloadDone.value = 0
+    downloadFailed.value = 0
     current.value = 0
     total.value = 0
     lastEvent.value = ''
@@ -75,7 +90,7 @@ export const useProgressStore = defineStore('progress', () => {
 
   function startListening() {
     EventsOn('search:progress', (event: SearchEvent) => {
-      searchEvents.value.push(event)
+      pushCapped(searchEvents.value, event)
       if (event.type === 'provider_done') {
         lastEvent.value = `${event.provider}: ${event.count} papers`
       } else if (event.type === 'query_start') {
@@ -96,7 +111,7 @@ export const useProgressStore = defineStore('progress', () => {
     })
 
     EventsOn('search:error', (data: any) => {
-      searchEvents.value.push({
+      pushCapped(searchEvents.value, {
         type: 'error', axis: data?.axis || '', query: '', provider: '',
         count: 0, total: 0, error: data?.error || '', duration_ms: 0, raw_count: 0,
       })
@@ -108,7 +123,9 @@ export const useProgressStore = defineStore('progress', () => {
         resetDownload()
         downloading.value = true
       }
-      downloadEvents.value.push(event)
+      pushCapped(downloadEvents.value, event)
+      if (event.type === 'done') downloadDone.value++
+      else if (event.type === 'fail') downloadFailed.value++
       current.value = event.current
       total.value = event.total
       if (event.type === 'start') {
@@ -124,8 +141,8 @@ export const useProgressStore = defineStore('progress', () => {
 
     EventsOn('download:done', () => {
       downloading.value = false
-      const done = downloadEvents.value.filter(e => e.type === 'done').length
-      const failed = downloadEvents.value.filter(e => e.type === 'fail').length
+      const done = downloadDone.value
+      const failed = downloadFailed.value
       lastEvent.value = 'Download complete'
       // Only show toast for batch downloads, not single-paper auto-downloads
       if (total.value > 1) {
@@ -161,7 +178,7 @@ export const useProgressStore = defineStore('progress', () => {
   }
 
   return {
-    searching, downloading, radarRunning, searchEvents, downloadEvents,
+    searching, downloading, radarRunning, searchEvents, downloadEvents, downloadDone, downloadFailed,
     current, total, lastEvent, reviewRunning, reviewCurrent, reviewTotal, reviewLabel,
     resetSearch, resetDownload, startListening, stopListening,
     setNotify, setOnSearchDone, setOnDownloadDone,
