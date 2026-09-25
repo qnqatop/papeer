@@ -77,17 +77,29 @@ func (d *DB) ListPaperTags(paperID int64) ([]PaperTag, error) {
 	return out, rows.Err()
 }
 
-// SetPaperTags replaces all tags on a paper with the given tag IDs.
+// SetPaperTags replaces all tags on a paper with the given tag IDs, atomically:
+// on any error the paper keeps its previous tags. Duplicate IDs are ignored.
 func (d *DB) SetPaperTags(paperID int64, tagIDs []int64) error {
-	if _, err := d.Exec(`DELETE FROM paper_tags WHERE paper_id=?`, paperID); err != nil {
+	tx, err := d.Begin()
+	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM paper_tags WHERE paper_id=?`, paperID); err != nil {
+		return err
+	}
+	seen := make(map[int64]bool, len(tagIDs))
 	for _, tid := range tagIDs {
-		if _, err := d.Exec(`INSERT INTO paper_tags (tag_id, paper_id) VALUES (?, ?)`, tid, paperID); err != nil {
-			return err
+		if seen[tid] {
+			continue
+		}
+		seen[tid] = true
+		if _, err := tx.Exec(`INSERT INTO paper_tags (tag_id, paper_id) VALUES (?, ?)`, tid, paperID); err != nil {
+			return fmt.Errorf("set paper tags: %w", err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // buildTagFilter returns a subquery clause for filtering by tag IDs.
