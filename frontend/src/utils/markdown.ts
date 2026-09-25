@@ -50,5 +50,8 @@ export function renderMarkdown(text: string): string {
   html = html.replace(/<p><table>/g, '<table>')
   html = html.replace(/<\/table><\/p>/g, '</table>')
 
-  return DOMPurify.sanitize(html)
+  // The leading newline (trimmed again) works around DOMPurify >= 3.4.12
+  // unwrapping the first top-level element (e.g. <table>) under happy-dom's
+  // NodeIterator; real browsers produce identical output either way.
+  return DOMPurify.sanitize('\n' + html).trimStart()
 }
