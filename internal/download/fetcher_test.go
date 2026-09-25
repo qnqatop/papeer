@@ -125,3 +125,21 @@ func TestIsPDFEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestRefererForURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://cyberleninka.ru/article/n/slug/pdf", "https://cyberleninka.ru/article/n/slug"},
+		{"https://www.cyberleninka.ru/article/n/slug/pdf", "https://www.cyberleninka.ru/article/n/slug"},
+		{"https://CyberLeninka.ru/article/n/slug/pdf", "https://CyberLeninka.ru/article/n/slug"},
+		{"https://arxiv.org/pdf/2401.00001", ""},
+		// Substring tricks must not match.
+		{"https://cyberleninka.ru.evil.com/article/n/slug/pdf", ""},
+		{"https://evil.com/?u=cyberleninka.ru/pdf", ""},
+		{"://bad", ""},
+	}
+	for _, c := range cases {
+		if got := refererForURL(c.in); got != c.want {
+			t.Errorf("refererForURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

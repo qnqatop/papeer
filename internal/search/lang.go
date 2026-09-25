@@ -2,6 +2,14 @@ package search
 
 import "unicode"
 
+// minCyrillicForRu is how many Cyrillic letters make a text Russian regardless
+// of how much Latin it also contains. Russian titles routinely carry English
+// terms ("Fine-tuning LLaMA и RuBERT для Question Answering" is 4 Cyrillic vs
+// 38 Latin letters), while English titles practically never contain Cyrillic,
+// so a few Cyrillic letters are strong evidence on their own. A lone letter
+// (a variable name, "Ж" in a linguistics paper) is not enough.
+const minCyrillicForRu = 3
+
 // detectLang guesses a paper's language from the script of its text: Cyrillic →
 // "ru", Latin → "en". It is deliberately coarse (script-based, not
 // language-model based) — enough to tell a Russian article from an English one,
@@ -21,7 +29,7 @@ func detectLang(s string) string {
 	if cyr == 0 && lat == 0 {
 		return ""
 	}
-	if cyr >= lat {
+	if cyr >= minCyrillicForRu || cyr >= lat {
 		return "ru"
 	}
 	return "en"

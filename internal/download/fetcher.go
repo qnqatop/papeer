@@ -146,12 +146,12 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	// acquisition). Old upstream APIs still hand out the legacy host.
 	rawURL = rewriteDeadURL(rawURL)
 
-	// Compute a per-host Referer. CyberLeninka serves a captcha instead of the
+	// Compute the Referer per URL. CyberLeninka serves a captcha instead of the
 	// PDF unless the request carries a Referer pointing at the article page (the
-	// PDF URL without its trailing /pdf). All downloads in this call reuse it.
-	referer := refererForURL(rawURL)
+	// PDF URL without its trailing /pdf). It is derived from each fetched URL,
+	// so a PDF link extracted from HTML never inherits another page's Referer.
 	download := func(u string) ([]byte, string, error) {
-		return client.DownloadFileWithReferer(ctx, u, referer)
+		return client.DownloadFileWithReferer(ctx, u, refererForURL(u))
 	}
 
 	// Step 1: download the URL.
@@ -219,7 +219,9 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	// Step 3b: still HTML at a /pdf URL → wait for the JS countdown and
 	// re-fetch the same URL. The first hit set the cookies the publisher
 	// needs to stream the PDF binary on the next request.
-	if looksLikeHTML(data) && isPDFEndpoint(rawURL) {
+	// CyberLeninka's HTML at a /pdf URL is a captcha, not a countdown: waiting
+	// and re-fetching only hammers it harder, so skip the retries there.
+	if looksLikeHTML(data) && isPDFEndpoint(rawURL) && !isCyberLeninkaURL(rawURL) {
 		for _, wait := range interstitialRetryDelays {
 			select {
 			case <-ctx.Done():
@@ -269,14 +271,21 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 // Referer pointing at the article page — the same URL without the trailing
 // "/pdf" — otherwise it answers with a captcha/HTML.
 func refererForURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	if u.Host != "cyberleninka.ru" {
+	if !isCyberLeninkaURL(rawURL) {
 		return ""
 	}
 	return strings.TrimSuffix(rawURL, "/pdf")
+}
+
+// isCyberLeninkaURL reports whether rawURL points at cyberleninka.ru (with or
+// without "www."), matching the parsed host rather than a substring.
+func isCyberLeninkaURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	return host == "cyberleninka.ru"
 }
 
 // isPDFEndpoint reports whether the URL is most likely the publisher's PDF

@@ -1,9 +1,11 @@
 package search
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,9 +34,16 @@ func (cl *CyberLeninka) Name() string { return "cyberleninka" }
 // can restrict a Russian-scoped axis to Russian sources.
 func (cl *CyberLeninka) Language() string { return "ru" }
 
-// clRetryBackoff mirrors the battle-tested delays from the dissertation
-// harvester (fetch_ru_refs.py): retry temporary API failures three times.
-var clRetryBackoff = []time.Duration{3 * time.Second, 8 * time.Second, 20 * time.Second}
+// clRetryBackoff holds the pauses between attempts on temporary API failures
+// (delays from the dissertation harvester, fetch_ru_refs.py): up to
+// len(clRetryBackoff)+1 attempts in total.
+var clRetryBackoff = []time.Duration{3 * time.Second, 8 * time.Second}
+
+// clYearFilterSize is the page size requested when a year filter is set. The
+// API cannot filter by year, so filtering happens client-side; asking for only
+// `limit` records would leave few or none after the filter (e.g. the radar asks
+// for 3 recent papers — the 3 most relevant ones are rarely from last year).
+const clYearFilterSize = 100
 
 func (cl *CyberLeninka) Search(ctx context.Context, query string, limit int, yearMin int) ([]RawPaper, error) {
 	if limit > 100 {
@@ -49,7 +58,11 @@ func (cl *CyberLeninka) Search(ctx context.Context, query string, limit int, yea
 	}
 	u := base + "/api/search"
 
-	body, err := json.Marshal(clRequest{Mode: "articles", Q: query, Size: limit, From: 0})
+	size := limit
+	if yearMin > 0 {
+		size = clYearFilterSize
+	}
+	body, err := json.Marshal(clRequest{Mode: "articles", Q: query, Size: size, From: 0})
 	if err != nil {
 		return nil, err
 	}
@@ -65,10 +78,19 @@ func (cl *CyberLeninka) Search(ctx context.Context, query string, limit int, yea
 		return nil, fmt.Errorf("cyberleninka: decode response: %w", err)
 	}
 
-	out := make([]RawPaper, 0, len(resp.Articles))
+	out := make([]RawPaper, 0, min(limit, len(resp.Articles)))
 	for _, a := range resp.Articles {
+		if len(out) >= limit {
+			break
+		}
 		// API has no year filter; drop older articles on our side.
 		if yearMin > 0 && a.Year.v != nil && *a.Year.v < yearMin {
+			continue
+		}
+		// The PDF URL is built by appending the relative link to our host, so
+		// only accept article slugs — anything else (empty, absolute, or a
+		// ".evil.com/..." suffix) would point the download somewhere else.
+		if !strings.HasPrefix(a.Link, "/article/") {
 			continue
 		}
 		out = append(out, RawPaper{
@@ -86,32 +108,40 @@ func (cl *CyberLeninka) Search(ctx context.Context, query string, limit int, yea
 }
 
 // postWithRetry POSTs the search request, retrying on 429/502/503/504 with the
-// harvester's 3/8/20 s backoff (up to 3 attempts). PostJSON has no retry
-// variant, so the loop lives here.
+// clRetryBackoff pauses. PostJSON has no retry variant, so the loop lives here.
+//
+// A 200 response whose body is not JSON is CyberLeninka's captcha/anti-bot
+// page. It is reported as HTTP 429 without retrying, so the engine's circuit
+// breaker skips the provider for the remaining queries instead of hitting the
+// captcha again on every query.
 func (cl *CyberLeninka) postWithRetry(ctx context.Context, url string, body []byte, headers map[string]string) ([]byte, error) {
-	var lastErr error
-	for attempt := 0; attempt < len(clRetryBackoff); attempt++ {
+	for attempt := 0; ; attempt++ {
 		raw, status, err := cl.client.PostJSON(ctx, url, body, headers)
 		if err == nil && status < 400 {
+			if !looksLikeJSON(raw) {
+				return nil, &httpclient.StatusError{Code: 429, Host: "cyberleninka.ru"}
+			}
 			return raw, nil
 		}
-		if err != nil {
-			lastErr = err
-		} else {
-			lastErr = &httpclient.StatusError{Code: status, Host: "cyberleninka.ru"}
+		if err == nil {
+			err = &httpclient.StatusError{Code: status, Host: "cyberleninka.ru"}
 		}
-
-		if attempt < len(clRetryBackoff)-1 && isCLRetryable(status) {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(clRetryBackoff[attempt]):
-			}
-			continue
+		if attempt >= len(clRetryBackoff) || !isCLRetryable(status) {
+			return nil, err
 		}
-		break
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(clRetryBackoff[attempt]):
+		}
 	}
-	return nil, lastErr
+}
+
+// looksLikeJSON reports whether body starts (after whitespace) like a JSON
+// object — the search API always answers with one.
+func looksLikeJSON(body []byte) bool {
+	b := bytes.TrimSpace(body)
+	return len(b) > 0 && b[0] == '{'
 }
 
 // isCLRetryable reports whether a status warrants a retry. status == 0 means the
@@ -125,12 +155,16 @@ func isCLRetryable(status int) bool {
 	return false
 }
 
-var reHTMLTag = regexp.MustCompile(`<[^>]+>`)
+// reHighlightTag matches only the inline highlight/formatting tags CyberLeninka
+// puts into name/annotation/journal fields (query matches are wrapped in <b>).
+// A generic `<[^>]+>` would also eat text such as "p<0.05 при n>30".
+var reHighlightTag = regexp.MustCompile(`(?i)</?(?:b|i|em|strong|mark|sup|sub)\s*>`)
 
-// stripTags removes HTML markup (CyberLeninka highlights query matches with
-// <b> tags in name/annotation/journal fields).
+// stripTags removes the highlight markup and decodes HTML entities (&quot;,
+// &laquo;, &amp; ...) so titles read and deduplicate as plain text.
 func stripTags(s string) string {
-	return strings.TrimSpace(reHTMLTag.ReplaceAllString(s, ""))
+	s = reHighlightTag.ReplaceAllString(s, "")
+	return strings.TrimSpace(html.UnescapeString(s))
 }
 
 type clRequest struct {

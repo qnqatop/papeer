@@ -115,6 +115,9 @@ type App struct {
 	pendingUpdate *updater.UpdateInfo
 	dlPaperMu     sync.Mutex
 	dlPaperSet    map[int64]bool // guards against duplicate single-paper downloads
+
+	rateLimitsOnce sync.Once
+	rateLimits     *httpclient.RateLimitRegistry // shared by every client from makeHTTPClient
 }
 
 // LLM-related errors.
@@ -870,7 +873,6 @@ func buildDownloadSources(profile *db.Profile) []download.Source {
 
 	allSources := map[string]download.Source{
 		"search_report": dlsources.NewSearchReport(),
-		"cyberleninka":  dlsources.NewCyberLeninka(),
 		"arxiv":         dlsources.NewArXiv(),
 		"s2_doi":        dlsources.NewS2ByDOI(),
 		"openalex":      dlsources.NewOpenAlex(),
@@ -908,6 +910,11 @@ func (a *App) makeHTTPClient(email string) (*httpclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Each operation builds its own client; sharing one registry keeps
+	// concurrent search, downloads and citation fetches within a single
+	// per-host rate instead of each getting its own budget.
+	a.rateLimitsOnce.Do(func() { a.rateLimits = httpclient.NewRateLimitRegistry() })
+	client.UseRateLimitRegistry(a.rateLimits)
 
 	if s2Key, _ := a.db.GetSetting("semantic_scholar_api_key"); s2Key != "" {
 		client.SetHostHeader("api.semanticscholar.org", "x-api-key", s2Key)
@@ -916,6 +923,10 @@ func (a *App) makeHTTPClient(email string) (*httpclient.Client, error) {
 		// the limiter kept throttling at the slow default even when a key
 		// was configured — the exact bug the batch citation fetch fixes.
 		client.SetHostRateLimit("api.semanticscholar.org", 1)
+	} else {
+		// The registry is shared: drop back to the keyless rate if the key
+		// was removed since an earlier client raised it.
+		client.SetHostRateLimit("api.semanticscholar.org", 0.33)
 	}
 
 	// CyberLeninka is an undocumented public endpoint; stay polite (~1 request

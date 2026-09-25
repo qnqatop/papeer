@@ -3,6 +3,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"slices"
+	"strings"
 )
 
 func (d *DB) ListAxes(profileID int64) ([]Axis, error) {
@@ -56,21 +58,40 @@ func (d *DB) GetAxis(id int64) (*Axis, error) {
 	return &a, nil
 }
 
+// LangScopes lists the supported axis language scopes.
+var LangScopes = []string{"en", "ru"}
+
+// NormalizeLangScope lowercases and trims an axis language scope, maps empty
+// to the "en" default, and rejects values outside LangScopes.
+func NormalizeLangScope(s string) (string, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return "en", nil
+	}
+	if !slices.Contains(LangScopes, s) {
+		return "", fmt.Errorf("invalid lang_scope %q (want one of %s)", s, strings.Join(LangScopes, ", "))
+	}
+	return s, nil
+}
+
 // SaveAxis creates or updates an axis with its queries and keywords.
 // If a.ID == 0, a new axis is created. Otherwise, it updates the existing one.
 // Queries and keywords are replaced entirely (delete + re-insert).
 func (d *DB) SaveAxis(a *Axis) error {
+	// Normalize lang_scope so the column's NOT NULL invariant holds, empty
+	// (unset by older callers/UI) maps to the English default, and a typo such
+	// as "fr" is rejected instead of silently matching no search provider.
+	scope, err := NormalizeLangScope(a.LangScope)
+	if err != nil {
+		return err
+	}
+	a.LangScope = scope
+
 	tx, err := d.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-
-	// Normalize lang_scope so the column's NOT NULL invariant holds and empty
-	// (unset by older callers/UI) maps to the English default.
-	if a.LangScope == "" {
-		a.LangScope = "en"
-	}
 
 	if a.ID == 0 {
 		// Insert new axis.

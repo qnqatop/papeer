@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -378,6 +379,70 @@ func TestEngine_LangScope_FiltersOffLanguageArticles(t *testing.T) {
 			t.Error("English article should have been filtered out of a ru-scoped axis")
 		}
 	}
+}
+
+// English axes are not language-filtered: the international sources
+// legitimately return Russian-titled papers there (behavior before lang_scope).
+func TestEngine_LangScope_EnKeepsRussianTitledPapers(t *testing.T) {
+	d := testSearchDB(t)
+	profileID := createTestSearchProfile(t, d)
+
+	axis := &db.Axis{ProfileID: profileID, AxisKey: "en", Queries: []db.Query{{Text: "q"}}}
+	if err := d.SaveAxis(axis); err != nil {
+		t.Fatal(err)
+	}
+	providers := []Provider{&mockProvider{
+		name: "openalex",
+		papers: []RawPaper{
+			{Title: "English Paper", Source: "openalex"},
+			{Title: "Русская статья в OpenAlex", Source: "openalex"},
+		},
+	}}
+	engine := NewEngine(d, providers, nil)
+	if _, err := engine.SearchAxis(context.Background(), SearchAxisInput{
+		ProfileID: profileID, Axis: *axis, Queries: []string{"q"}, MaxPerQuery: 25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, total, err := d.ListPapers(db.PaperFilter{ProfileID: profileID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2 (en axis must not drop Russian titles)", total)
+	}
+}
+
+func TestEngine_LangScope_IsCaseInsensitive(t *testing.T) {
+	// runScopedAxis hands the raw " RU " to the engine (SaveAxis normalizes
+	// its own copy), exercising the engine-level normalization.
+	papers := runScopedAxis(t, " RU ")
+	if len(papers) != 1 || papers[0].PdfSource == nil || *papers[0].PdfSource != "cyberleninka" {
+		t.Errorf("papers = %+v, want the single cyberleninka paper", papers)
+	}
+}
+
+// A scope no provider serves must be reported, not silently return 0 papers.
+func TestEngine_LangScope_NoProviderEmitsError(t *testing.T) {
+	d := testSearchDB(t)
+	profileID := createTestSearchProfile(t, d)
+
+	var events []SearchEvent
+	engine := NewEngine(d, langScopeProviders(), func(ev SearchEvent) { events = append(events, ev) })
+	if _, err := engine.SearchAxis(context.Background(), SearchAxisInput{
+		ProfileID:   profileID,
+		Axis:        db.Axis{AxisKey: "fr", LangScope: "fr"},
+		Queries:     []string{"q"},
+		MaxPerQuery: 25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type == "provider_error" && strings.Contains(ev.Error, "no search provider") {
+			return
+		}
+	}
+	t.Errorf("no provider_error event for unserved scope; events = %+v", events)
 }
 
 func TestMain(m *testing.M) {

@@ -11,9 +11,15 @@ func TestDetectLang(t *testing.T) {
 		{"A Survey of Recommender Systems", "en"},
 		{"", ""},
 		{"2024 :： — 123", ""},
-		// Mixed: majority script wins.
+		// Mixed: a Russian title with English terms is Russian even when
+		// Latin letters dominate — English titles practically never carry
+		// Cyrillic words.
 		{"Рекомендательные системы (recommender systems)", "ru"},
-		{"Recommender systems: рекомендации", "en"},
+		{"Recommender systems: рекомендации", "ru"},
+		{"Fine-tuning LLaMA и RuBERT для Question Answering", "ru"},
+		// A lone Cyrillic letter is not enough to flip an English title.
+		{"On the pronunciation of the letter Ж in loanwords", "en"},
+		{"Ж", "ru"},
 	}
 	for _, c := range cases {
 		if got := detectLang(c.in); got != c.want {

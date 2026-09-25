@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestDoJSON_Success(t *testing.T) {
@@ -162,5 +164,33 @@ func TestPoliteUA(t *testing.T) {
 	ua = PoliteUA("")
 	if ua != "papeer/1.0 (academic research)" {
 		t.Errorf("UA empty = %q", ua)
+	}
+}
+
+// Downloads must honour a per-host limit on top of the global download limit,
+// and clients sharing a registry must share that budget.
+func TestDownloadFile_HonoursSharedPerHostLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("%PDF-1.4 ok"))
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	reg := NewRateLimitRegistry()
+	a, b := New("a@example.com"), New("b@example.com")
+	a.UseRateLimitRegistry(reg)
+	b.UseRateLimitRegistry(reg)
+	a.SetHostRateLimit(host, 1)
+
+	ctx := context.Background()
+	if _, _, err := a.DownloadFile(ctx, srv.URL+"/1.pdf"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, _, err := b.DownloadFile(ctx, srv.URL+"/2.pdf"); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(start); waited < 500*time.Millisecond {
+		t.Errorf("second download took %v, want ~1s (shared 1 req/s host limit)", waited)
 	}
 }

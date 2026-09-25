@@ -176,3 +176,83 @@ func TestSummaries_TableConstraints(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeLangScope(t *testing.T) {
+	cases := []struct {
+		in, want string
+		wantErr  bool
+	}{
+		{"", "en", false},
+		{"en", "en", false},
+		{"ru", "ru", false},
+		{" RU ", "ru", false},
+		{"En", "en", false},
+		{"ru-RU", "", true},
+		{"fr", "", true},
+	}
+	for _, c := range cases {
+		got, err := NormalizeLangScope(c.in)
+		if (err != nil) != c.wantErr {
+			t.Errorf("NormalizeLangScope(%q) err = %v, wantErr %v", c.in, err, c.wantErr)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("NormalizeLangScope(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestSaveAxis_LangScope_NormalizesAndRejects(t *testing.T) {
+	d := testDB(t)
+	p := &Profile{Name: "test", Email: "t@t.com"}
+	if err := d.CreateProfile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Axis{ProfileID: p.ID, AxisKey: "upper", LangScope: "RU"}
+	if err := d.SaveAxis(a); err != nil {
+		t.Fatalf("SaveAxis(RU): %v", err)
+	}
+	got, err := d.GetAxis(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LangScope != "ru" {
+		t.Errorf("stored LangScope = %q, want ru", got.LangScope)
+	}
+
+	bad := &Axis{ProfileID: p.ID, AxisKey: "bad", LangScope: "fr"}
+	if err := d.SaveAxis(bad); err == nil {
+		t.Error("SaveAxis(fr) succeeded, want error")
+	}
+	axes, err := d.ListAxes(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(axes) != 1 {
+		t.Errorf("len(axes) = %d, want 1 (invalid axis not stored)", len(axes))
+	}
+}
+
+// Re-running the migration on an up-to-date database must not fail on the
+// "duplicate column" errors of the ADD COLUMN statements.
+func TestMigrate_Idempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "twice.db")
+	for i := 0; i < 2; i++ {
+		d, err := NewDB(path)
+		if err != nil {
+			t.Fatalf("NewDB #%d: %v", i+1, err)
+		}
+		d.Close()
+	}
+}
+
+func TestAddColumn_ReportsRealErrors(t *testing.T) {
+	d := testDB(t)
+	if err := d.addColumn("ALTER TABLE axes ADD COLUMN lang_scope TEXT"); err != nil {
+		t.Errorf("duplicate column must be ignored, got %v", err)
+	}
+	if err := d.addColumn("ALTER TABLE no_such_table ADD COLUMN x TEXT"); err == nil {
+		t.Error("error other than duplicate column must be returned")
+	}
+}

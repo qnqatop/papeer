@@ -47,12 +47,16 @@ func ImportAxesFromYAML(r io.Reader, profileID int64) ([]db.Axis, error) {
 	axes := make([]db.Axis, 0, len(f.Axes))
 	pos := 0
 	for key, ya := range f.Axes {
+		scope, err := db.NormalizeLangScope(ya.LangScope)
+		if err != nil {
+			return nil, fmt.Errorf("axis %q: %w", key, err)
+		}
 		a := db.Axis{
 			ProfileID:   profileID,
 			AxisKey:     key,
 			Description: ya.Description,
 			Position:    pos,
-			LangScope:   ya.LangScope, // empty → normalized to "en" by SaveAxis
+			LangScope:   scope,
 		}
 		if ya.YearMin != 0 {
 			a.YearMin = ptr.Ptr(ya.YearMin)

@@ -82,6 +82,14 @@ func (c *Client) SetHostRateLimit(host string, reqPerSec float64) {
 	c.rateReg.SetLimit(host, rate.Limit(reqPerSec))
 }
 
+// UseRateLimitRegistry makes the client share reg with other clients, so
+// concurrent operations (search, downloads, citations) that each build their
+// own Client still respect one combined per-host rate. Call before the first
+// request.
+func (c *Client) UseRateLimitRegistry(reg *RateLimitRegistry) {
+	c.rateReg = reg
+}
+
 func (c *Client) applyHostHeaders(req *http.Request) {
 	if c.hostHeaders == nil {
 		return
@@ -303,6 +311,12 @@ func (c *Client) downloadFile(ctx context.Context, rawURL, referer string) ([]by
 	var lastErr error
 	for _, s := range strategies {
 		if err := c.rateReg.WaitDownload(ctx); err != nil {
+			return nil, "", err
+		}
+		// Per-host limit on top of the global download limit, so a host with
+		// a strict limit (e.g. cyberleninka.ru) is not hit at the full
+		// download rate by batch PDF downloads.
+		if err := c.rateReg.Wait(ctx, host); err != nil {
 			return nil, "", err
 		}
 

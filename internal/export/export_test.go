@@ -421,9 +421,34 @@ topics:
 	if got := byKey["ru_topic"].LangScope; got != "ru" {
 		t.Errorf("ru_topic LangScope = %q, want ru", got)
 	}
-	// en_topic omits lang_scope → empty here; SaveAxis normalizes it to "en".
-	if got := byKey["en_topic"].LangScope; got != "" {
-		t.Errorf("en_topic LangScope = %q, want empty (normalized later)", got)
+	// en_topic omits lang_scope → the English default.
+	if got := byKey["en_topic"].LangScope; got != "en" {
+		t.Errorf("en_topic LangScope = %q, want en", got)
+	}
+}
+
+func TestImportYAML_LangScope_NormalizedAndValidated(t *testing.T) {
+	axes, err := ImportAxesFromYAML(strings.NewReader(`
+topics:
+  upper:
+    lang_scope: RU
+    queries: ["q"]
+`), 1)
+	if err != nil {
+		t.Fatalf("ImportAxesFromYAML: %v", err)
+	}
+	if len(axes) != 1 || axes[0].LangScope != "ru" {
+		t.Fatalf("axes = %+v, want one axis with LangScope ru", axes)
+	}
+
+	_, err = ImportAxesFromYAML(strings.NewReader(`
+topics:
+  french:
+    lang_scope: fr
+    queries: ["q"]
+`), 1)
+	if err == nil || !strings.Contains(err.Error(), "french") {
+		t.Errorf("err = %v, want an invalid lang_scope error naming the axis", err)
 	}
 }
 

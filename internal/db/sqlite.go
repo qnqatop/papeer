@@ -62,23 +62,40 @@ func (d *DB) pragma() error {
 	return nil
 }
 
+// addColumn runs an "ALTER TABLE ... ADD COLUMN" migration. The column already
+// existing (the usual case on every start after the first) is not an error;
+// anything else (SQLITE_BUSY, read-only file, ...) is, because the queries that
+// select the column would otherwise fail later with "no such column".
+func (d *DB) addColumn(stmt string) error {
+	if _, err := d.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate %q: %w", stmt, err)
+	}
+	return nil
+}
+
 func (d *DB) migrate() error {
 	if _, err := d.Exec(schema); err != nil {
 		return err
 	}
 	// Add columns that may not exist in older databases.
-	// Ignore "duplicate column" errors.
-	d.Exec("ALTER TABLE axes ADD COLUMN last_radar_run DATETIME")
-	// lang_scope restricts an axis to same-language search providers. Older axes
-	// (all English-language sources) default to 'en', preserving their behavior.
-	d.Exec("ALTER TABLE axes ADD COLUMN lang_scope TEXT NOT NULL DEFAULT 'en'")
-	d.Exec("ALTER TABLE papers ADD COLUMN ai_match_score INTEGER DEFAULT 0;")
-	d.Exec("ALTER TABLE papers ADD COLUMN s2_paper_id TEXT;")
-	// last_citation_fetch_at marks when a paper was last processed by the
-	// citation fetch worker (resolved or not — an attempt was made). Used to
-	// compute an accurate papers_processed count and to resume a cancelled
-	// fetch without redoing already-processed papers.
-	d.Exec("ALTER TABLE papers ADD COLUMN last_citation_fetch_at DATETIME;")
+	for _, stmt := range []string{
+		"ALTER TABLE axes ADD COLUMN last_radar_run DATETIME",
+		// lang_scope restricts an axis to same-language search providers. Older
+		// axes (all English-language sources) default to 'en', preserving their
+		// behavior.
+		"ALTER TABLE axes ADD COLUMN lang_scope TEXT NOT NULL DEFAULT 'en'",
+		"ALTER TABLE papers ADD COLUMN ai_match_score INTEGER DEFAULT 0",
+		"ALTER TABLE papers ADD COLUMN s2_paper_id TEXT",
+		// last_citation_fetch_at marks when a paper was last processed by the
+		// citation fetch worker (resolved or not — an attempt was made). Used
+		// to compute an accurate papers_processed count and to resume a
+		// cancelled fetch without redoing already-processed papers.
+		"ALTER TABLE papers ADD COLUMN last_citation_fetch_at DATETIME",
+	} {
+		if err := d.addColumn(stmt); err != nil {
+			return err
+		}
+	}
 
 	// Older DBs have keywords.type CHECK without 'exclude'. SQLite cannot
 	// ALTER a CHECK constraint, so rebuild the table when needed.

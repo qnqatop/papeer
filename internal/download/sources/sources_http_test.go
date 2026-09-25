@@ -309,31 +309,3 @@ func TestS2ByTitle_TruncatesLongTitle(t *testing.T) {
 		t.Errorf("title not truncated: got %d 'a' chars in query", count)
 	}
 }
-
-// ─── CyberLeninka ─────────────────────────────────────────────────────────
-
-func TestCyberLeninka_ResolvesOwnHost(t *testing.T) {
-	s := NewCyberLeninka()
-	// Resolve makes no network call, so a nil client is fine.
-	url := "https://cyberleninka.ru/article/n/some-slug/pdf"
-	r := s.Resolve(context.Background(), nil, download.PaperInfo{PdfURL: url})
-	if r.PdfURL != url {
-		t.Errorf("PdfURL = %q, want %q", r.PdfURL, url)
-	}
-	if r.Reason != "" {
-		t.Errorf("Reason = %q, want empty", r.Reason)
-	}
-}
-
-func TestCyberLeninka_RejectsOtherHostAndEmpty(t *testing.T) {
-	s := NewCyberLeninka()
-	for _, tc := range []string{"", "https://arxiv.org/pdf/2401.00001", "https://example.com/x.pdf"} {
-		r := s.Resolve(context.Background(), nil, download.PaperInfo{PdfURL: tc})
-		if r.PdfURL != "" {
-			t.Errorf("PdfURL(%q) = %q, want empty", tc, r.PdfURL)
-		}
-		if r.Reason != "not a cyberleninka paper" {
-			t.Errorf("Reason(%q) = %q", tc, r.Reason)
-		}
-	}
-}

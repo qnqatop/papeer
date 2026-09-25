@@ -137,6 +137,7 @@ func sourcePriority(src string) int {
 	priorities := map[string]int{
 		"arxiv": 0, "semantic_scholar": 1, "openalex": 2,
 		"unpaywall": 3, "crossref": 4, "s2_title": 5,
+		"cyberleninka": 6,
 	}
 	if p, ok := priorities[src]; ok {
 		return p
