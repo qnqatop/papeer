@@ -26,24 +26,17 @@ func (d *DB) UpdateSummary(s *Summary) error {
 
 // UpsertSummary inserts or updates (for regeneration).
 func (d *DB) UpsertSummary(s *Summary) error {
-	res, err := d.Exec(`INSERT INTO summaries (paper_id, provider, model, prompt_hash, content, tokens_in, tokens_out, status, error_msg)
+	// RETURNING yields the row id on both the insert and the conflict-update
+	// path (LastInsertId is stale on the update path).
+	err := d.QueryRow(`INSERT INTO summaries (paper_id, provider, model, prompt_hash, content, tokens_in, tokens_out, status, error_msg)
 		VALUES (?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(paper_id, model) DO UPDATE SET
 			content=excluded.content, tokens_in=excluded.tokens_in, tokens_out=excluded.tokens_out,
-			status=excluded.status, error_msg=excluded.error_msg, updated_at=CURRENT_TIMESTAMP`,
-		s.PaperID, s.Provider, s.Model, s.PromptHash, s.Content, s.TokensIn, s.TokensOut, s.Status, s.ErrorMsg)
+			status=excluded.status, error_msg=excluded.error_msg, updated_at=CURRENT_TIMESTAMP
+		RETURNING id`,
+		s.PaperID, s.Provider, s.Model, s.PromptHash, s.Content, s.TokensIn, s.TokensOut, s.Status, s.ErrorMsg).Scan(&s.ID)
 	if err != nil {
 		return fmt.Errorf("upsert summary: %w", err)
-	}
-	id, _ := res.LastInsertId()
-	if id > 0 {
-		s.ID = id
-	}
-	if s.ID == 0 {
-		// ON CONFLICT UPDATE path: LastInsertId returns 0, fetch actual ID.
-		if err := d.QueryRow(`SELECT id FROM summaries WHERE paper_id=? AND model=?`, s.PaperID, s.Model).Scan(&s.ID); err != nil {
-			return fmt.Errorf("upsert summary get id: %w", err)
-		}
 	}
 	return nil
 }

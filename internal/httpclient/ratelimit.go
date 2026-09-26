@@ -34,9 +34,15 @@ func NewRateLimitRegistry() *RateLimitRegistry {
 // whatever default or previously-set limiter was in place. Used when a paid
 // or keyed API tier unlocks a materially higher rate than the polite-pool
 // default (e.g. Semantic Scholar with an x-api-key).
+//
+// Setting the limit a host already has is a no-op, so a shared registry can be
+// re-configured by every new client without resetting the limiter's state.
 func (r *RateLimitRegistry) SetLimit(host string, limit rate.Limit) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if lim, ok := r.limiters[host]; ok && lim.Limit() == limit {
+		return
+	}
 	r.limiters[host] = rate.NewLimiter(limit, 1)
 }
 

@@ -10,6 +10,21 @@ import (
 	"github.com/qnqatop/papeer/internal/ptr"
 )
 
+// csvSafe neutralises spreadsheet formula injection: text cells taken from
+// remote metadata (titles, authors, venues…) that start with a formula
+// trigger character are prefixed with a single quote so Excel/LibreOffice
+// treat them as plain text instead of evaluating them.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
 // ExportCSV writes papers as CSV to w.
 func ExportCSV(papers []db.Paper, w io.Writer) error {
 	cw := csv.NewWriter(w)
@@ -29,17 +44,17 @@ func ExportCSV(papers []db.Paper, w io.Writer) error {
 			year = fmt.Sprintf("%d", *p.Year)
 		}
 		row := []string{
-			p.Title,
-			strings.Join(p.Authors, "; "),
+			csvSafe(p.Title),
+			csvSafe(strings.Join(p.Authors, "; ")),
 			year,
-			p.Venue,
-			ptr.Val(p.DOI),
-			ptr.Val(p.ArxivID),
-			ptr.Val(p.PdfURL),
+			csvSafe(p.Venue),
+			csvSafe(ptr.Val(p.DOI)),
+			csvSafe(ptr.Val(p.ArxivID)),
+			csvSafe(ptr.Val(p.PdfURL)),
 			fmt.Sprintf("%d", p.CitationCount),
 			fmt.Sprintf("%d", p.PreScore),
-			p.Status,
-			strings.Join(p.Sources, "; "),
+			csvSafe(p.Status),
+			csvSafe(strings.Join(p.Sources, "; ")),
 		}
 		if err := cw.Write(row); err != nil {
 			return err

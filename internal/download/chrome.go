@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,8 @@ import (
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
+
+	"github.com/qnqatop/papeer/internal/httpclient"
 )
 
 // ErrChromeNotFound is returned by FetchPDFWithChrome when no Chrome/Chromium
@@ -90,6 +94,49 @@ func findChromeBinary() string {
 	return ""
 }
 
+// chromeProxy is the proxy Chrome routes through (same setting as the Go
+// client). Guarded by chromeProxyMu since downloads run concurrently.
+var (
+	chromeProxyMu sync.RWMutex
+	chromeProxy   string
+)
+
+// SetChromeProxy sets the proxy ("http://host:port", "socks5://host:port")
+// used by FetchPDFWithChrome. An empty string means a direct connection.
+// Credentials in the URL are dropped — Chrome's --proxy-server can't use them.
+func SetChromeProxy(proxyURL string) {
+	p := ""
+	if proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil && u.Host != "" {
+			p = u.Scheme + "://" + u.Host
+		}
+	}
+	chromeProxyMu.Lock()
+	chromeProxy = p
+	chromeProxyMu.Unlock()
+}
+
+func currentChromeProxy() string {
+	chromeProxyMu.RLock()
+	defer chromeProxyMu.RUnlock()
+	return chromeProxy
+}
+
+// chromeRequestAllowed reports whether headless Chrome may issue a request
+// to rawURL: http(s) only, and never to localhost or a literal
+// loopback/private/link-local/unspecified/multicast IP. The navigation target
+// comes from remote API responses, so it must not reach local services.
+func chromeRequestAllowed(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	return !httpclient.IsDisallowedHost(u.Hostname())
+}
+
 // FetchPDFWithChrome downloads a PDF via headless Chrome. The browser
 // navigates to rawURL, lets the page's JS solve any bot challenge (Akamai
 // BMP, Cloudflare, MDPI interstitials), and grabs the PDF bytes via the
@@ -104,16 +151,26 @@ func FetchPDFWithChrome(ctx context.Context, rawURL, dest string) error {
 	if chromePath == "" {
 		return ErrChromeNotFound
 	}
+	if !chromeRequestAllowed(rawURL) {
+		return fmt.Errorf("chrome: refusing to navigate to %s", rawURL)
+	}
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(chromePath),
 		chromedp.Headless,
-		chromedp.NoSandbox,
 		chromedp.DisableGPU,
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("disable-features", "IsolateOrigins,site-per-process"),
 		chromedp.UserAgent(chromeUA),
 	)
+	// Chrome refuses to start its sandbox as root on Linux (containers, CI).
+	// Only there do we fall back to --no-sandbox; everywhere else the sandbox
+	// stays on since the browser renders arbitrary remote pages.
+	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+		opts = append(opts, chromedp.NoSandbox)
+	}
+	if p := currentChromeProxy(); p != "" {
+		opts = append(opts, chromedp.ProxyServer(p))
+	}
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, opts...)
 	defer cancelAlloc()
 
@@ -123,54 +180,90 @@ func FetchPDFWithChrome(ctx context.Context, rawURL, dest string) error {
 	timeoutCtx, cancelTimeout := context.WithTimeout(browserCtx, 90*time.Second)
 	defer cancelTimeout()
 
-	// pdfResult holds the captured PDF bytes (or an interception error).
-	type pdfResult struct {
-		body []byte
-		err  error
+	// resultCh receives the first intercepted body that validates as a PDF.
+	// Rejected candidates (HTML behind a .pdf URL, stubs) only update
+	// lastReject so the timeout error can explain what was seen.
+	resultCh := make(chan []byte, 1)
+	var (
+		rejectMu   sync.Mutex
+		lastReject string
+	)
+	reject := func(msg string) {
+		rejectMu.Lock()
+		lastReject = msg
+		rejectMu.Unlock()
 	}
-	resultCh := make(chan pdfResult, 1)
-	var deliverOnce sync.Once
-	deliver := func(r pdfResult) {
-		deliverOnce.Do(func() {
-			select {
-			case resultCh <- r:
-			default:
-			}
-		})
+	rejectReason := func() string {
+		rejectMu.Lock()
+		defer rejectMu.Unlock()
+		if lastReject == "" {
+			return ""
+		}
+		return " (last candidate: " + lastReject + ")"
 	}
 
-	// Fetch interception: pause every response, inspect its MIME, capture
-	// the body for the first PDF, continue everything else untouched. We do
-	// the CDP work in goroutines to avoid blocking the event dispatcher.
+	continueReq := func(id fetch.RequestID) {
+		_ = chromedp.Run(timeoutCtx,
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				return fetch.ContinueRequest(id).Do(ctx)
+			}),
+		)
+	}
+
+	// Fetch interception: requests are paused at the request stage (to block
+	// disallowed destinations, including redirect hops) and at the response
+	// stage (to capture the PDF body). We do the CDP work in goroutines to
+	// avoid blocking the event dispatcher.
 	chromedp.ListenTarget(timeoutCtx, func(ev interface{}) {
 		e, ok := ev.(*fetch.EventRequestPaused)
 		if !ok {
 			return
 		}
 		go func() {
-			// Detect PDF by Content-Type header or .pdf URL suffix as fallback.
-			isPDF := false
-			for _, h := range e.ResponseHeaders {
-				if strings.EqualFold(h.Name, "content-type") &&
-					strings.Contains(strings.ToLower(h.Value), "application/pdf") {
-					isPDF = true
-					break
+			responseStage := e.ResponseStatusCode != 0 || e.ResponseErrorReason != ""
+			if !responseStage {
+				if !chromeRequestAllowed(e.Request.URL) {
+					_ = chromedp.Run(timeoutCtx,
+						chromedp.ActionFunc(func(ctx context.Context) error {
+							return fetch.FailRequest(e.RequestID, network.ErrorReasonBlockedByClient).Do(ctx)
+						}),
+					)
+					return
 				}
-			}
-			if !isPDF && strings.Contains(strings.ToLower(e.Request.URL), ".pdf") {
-				// Heuristic: URL ends in .pdf but no Content-Type header set
-				// yet. Only trust this when we already have a response stage
-				// event (we do — RequestStageResponse).
-				isPDF = e.ResponseStatusCode != 0
+				continueReq(e.RequestID)
+				return
 			}
 
+			// Redirects and errors are never the PDF itself.
+			if e.ResponseErrorReason != "" || (e.ResponseStatusCode >= 300 && e.ResponseStatusCode < 400) {
+				continueReq(e.RequestID)
+				return
+			}
+
+			// Detect PDF by Content-Type header or .pdf URL as fallback; the
+			// body is checked for the %PDF- magic below either way.
+			isPDF := strings.Contains(strings.ToLower(e.Request.URL), ".pdf")
+			var contentLength int64 = -1
+			for _, h := range e.ResponseHeaders {
+				switch {
+				case strings.EqualFold(h.Name, "content-type"):
+					if strings.Contains(strings.ToLower(h.Value), "application/pdf") {
+						isPDF = true
+					}
+				case strings.EqualFold(h.Name, "content-length"):
+					if n, err := strconv.ParseInt(strings.TrimSpace(h.Value), 10, 64); err == nil {
+						contentLength = n
+					}
+				}
+			}
 			if !isPDF {
 				// Continue everything else so navigation completes.
-				_ = chromedp.Run(timeoutCtx,
-					chromedp.ActionFunc(func(ctx context.Context) error {
-						return fetch.ContinueRequest(e.RequestID).Do(ctx)
-					}),
-				)
+				continueReq(e.RequestID)
+				return
+			}
+			if contentLength > httpclient.MaxDownloadSize {
+				reject(fmt.Sprintf("%s too large (%d bytes)", e.Request.URL, contentLength))
+				continueReq(e.RequestID)
 				return
 			}
 
@@ -187,25 +280,32 @@ func FetchPDFWithChrome(ctx context.Context, rawURL, dest string) error {
 				}),
 			)
 			// Always continue, even on error, so Chrome moves on.
-			_ = chromedp.Run(timeoutCtx,
-				chromedp.ActionFunc(func(ctx context.Context) error {
-					return fetch.ContinueRequest(e.RequestID).Do(ctx)
-				}),
-			)
-			if err != nil {
-				deliver(pdfResult{err: fmt.Errorf("fetch.GetResponseBody for %s: %w", e.Request.URL, err)})
-				return
+			continueReq(e.RequestID)
+			switch {
+			case err != nil:
+				reject(fmt.Sprintf("fetch.GetResponseBody for %s: %v", e.Request.URL, err))
+			case int64(len(body)) > httpclient.MaxDownloadSize:
+				reject(fmt.Sprintf("%s too large (%d bytes)", e.Request.URL, len(body)))
+			default:
+				if verr := ValidatePDF(body); verr != nil {
+					reject(fmt.Sprintf("%s: %v", e.Request.URL, verr))
+					return
+				}
+				select {
+				case resultCh <- body:
+				default: // another candidate already won
+				}
 			}
-			deliver(pdfResult{body: body})
 		}()
 	})
 
-	// Run: enable network, enable fetch interception at the Response stage,
-	// then navigate. Pausing at Response means headers/body are ready when
-	// we receive EventRequestPaused.
+	// Run: enable network, enable fetch interception at both stages, then
+	// navigate. Pausing at Response means headers/body are ready when we
+	// receive EventRequestPaused.
 	if err := chromedp.Run(timeoutCtx,
 		network.Enable(),
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{
+			{URLPattern: "*", RequestStage: fetch.RequestStageRequest},
 			{URLPattern: "*", RequestStage: fetch.RequestStageResponse},
 		}),
 	); err != nil {
@@ -220,42 +320,31 @@ func FetchPDFWithChrome(ctx context.Context, rawURL, dest string) error {
 		navErrCh <- chromedp.Run(timeoutCtx, chromedp.Navigate(rawURL))
 	}()
 
-	select {
-	case r := <-resultCh:
-		if r.err != nil {
-			return fmt.Errorf("chrome PDF capture: %w", r.err)
-		}
-		if err := ValidatePDF(r.body); err != nil {
-			return fmt.Errorf("chrome got non-PDF from %s: %w", rawURL, err)
-		}
-		if err := os.WriteFile(dest, r.body, 0o644); err != nil {
+	save := func(body []byte) error {
+		if err := writeFileAtomic(dest, body); err != nil {
 			return fmt.Errorf("writing %s: %w", dest, err)
 		}
 		return nil
+	}
+
+	select {
+	case body := <-resultCh:
+		return save(body)
 
 	case err := <-navErrCh:
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("chrome navigate: %w", err)
 		}
-		// Navigation finished but no PDF was intercepted. Drain resultCh
-		// briefly in case the response is in flight.
+		// Navigation finished but no PDF was intercepted. Wait briefly in
+		// case the response is in flight.
 		select {
-		case r := <-resultCh:
-			if r.err != nil {
-				return fmt.Errorf("chrome PDF capture: %w", r.err)
-			}
-			if err := ValidatePDF(r.body); err != nil {
-				return fmt.Errorf("chrome got non-PDF from %s: %w", rawURL, err)
-			}
-			if err := os.WriteFile(dest, r.body, 0o644); err != nil {
-				return fmt.Errorf("writing %s: %w", dest, err)
-			}
-			return nil
+		case body := <-resultCh:
+			return save(body)
 		case <-time.After(3 * time.Second):
-			return fmt.Errorf("chrome navigated %s but no PDF response intercepted", rawURL)
+			return fmt.Errorf("chrome navigated %s but no PDF response intercepted%s", rawURL, rejectReason())
 		}
 
 	case <-timeoutCtx.Done():
-		return fmt.Errorf("chrome timeout waiting for PDF from %s", rawURL)
+		return fmt.Errorf("chrome timeout waiting for PDF from %s%s", rawURL, rejectReason())
 	}
 }

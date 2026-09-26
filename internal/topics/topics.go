@@ -9,6 +9,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 // Document is one paper's text to cluster (caller combines title+abstract).
@@ -281,9 +284,12 @@ func makeLabel(terms []string) string {
 	if len(top) > 3 {
 		top = top[:3]
 	}
+	// NoLower keeps strings.Title semantics: only word-initial letters change.
+	// A Caser is stateful, so it is created per call rather than shared.
+	caser := cases.Title(language.Und, cases.NoLower)
 	titled := make([]string, len(top))
 	for i, t := range top {
-		titled[i] = strings.Title(t) //nolint:staticcheck // simple heuristic title-casing is fine for cluster labels
+		titled[i] = caser.String(t)
 	}
 	return strings.Join(titled, " · ")
 }

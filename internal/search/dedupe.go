@@ -20,6 +20,7 @@ func NormalizeTitle(t string) string {
 var pdfSourcePriority = map[string]int{
 	"arxiv": 0, "semantic_scholar": 1, "openalex": 2,
 	"unpaywall": 3, "crossref": 4, "s2_title": 5,
+	"cyberleninka": 6,
 }
 
 // Dedupe merges raw papers by DOI (exact) then normalized title.

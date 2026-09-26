@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -37,6 +38,9 @@ func TestVersionCompare(t *testing.T) {
 		{"v1.0.0-beta", "v1.0.0", true},
 		{"1.0.0", "v1.1.0", true},
 		{"dev", "dev", false},
+		{"dev", "v1.0.0", false},           // unparseable current: never an update
+		{"v1.0.0", "garbage", false},       // unparseable latest
+		{"v1.2.3-5-gabc", "v1.2.2", false}, // older tag than the running build
 	}
 
 	for _, tt := range tests {
@@ -166,10 +170,11 @@ func TestResolveAsset(t *testing.T) {
 		{Name: "papeer-linux-amd64.tar.gz", BrowserDownloadURL: "linux"},
 	}
 
-	url, err := resolveAsset(allAssets)
+	asset, err := resolveAsset(allAssets)
 	if err != nil {
 		t.Fatalf("resolveAsset failed: %v", err)
 	}
+	url := asset.BrowserDownloadURL
 
 	var expected string
 	switch runtime.GOOS {
@@ -194,12 +199,12 @@ func TestResolveAsset_TwoForOnePlatform(t *testing.T) {
 		{Name: "papeer-linux-arm64.tar.gz", BrowserDownloadURL: "linux-arm64"},
 	}
 	if runtime.GOOS == "linux" {
-		url, err := resolveAsset(assets)
+		asset, err := resolveAsset(assets)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if url != "linux-amd64" {
-			t.Errorf("expected first matching asset, got %q", url)
+		if asset.BrowserDownloadURL != "linux-amd64" {
+			t.Errorf("expected first matching asset, got %q", asset.BrowserDownloadURL)
 		}
 	}
 }
@@ -283,10 +288,10 @@ func TestDownloadUpdate_Streaming(t *testing.T) {
 	defer srv.Close()
 
 	u := NewUpdater("v1.0.0")
-	u.SetHTTPClient(&http.Client{Timeout: 10 * time.Second})
+	u.trustedOrigin = srv.URL
 
 	var progressCalls int
-	path, err := u.DownloadUpdate(srv.URL+"/download", func(downloaded, total int64) {
+	path, _, err := u.downloadAsset(context.Background(), githubAsset{BrowserDownloadURL: srv.URL + "/download"}, func(downloaded, total int64) {
 		progressCalls++
 		if downloaded < 0 {
 			t.Error("negative downloaded")
@@ -324,9 +329,9 @@ func TestDownloadUpdate_Interrupted(t *testing.T) {
 	defer srv.Close()
 
 	u := NewUpdater("v1.0.0")
-	u.SetHTTPClient(&http.Client{Timeout: 10 * time.Second})
+	u.trustedOrigin = srv.URL
 
-	_, err := u.DownloadUpdate(srv.URL+"/download", nil)
+	_, _, err := u.downloadAsset(context.Background(), githubAsset{BrowserDownloadURL: srv.URL + "/download"}, nil)
 	if err == nil {
 		t.Error("expected error for incomplete download, got nil")
 	}
@@ -342,11 +347,11 @@ func TestDownloadUpdate_ContentLengthMismatch(t *testing.T) {
 	defer srv.Close()
 
 	u := NewUpdater("v1.0.0")
-	u.SetHTTPClient(&http.Client{Timeout: 10 * time.Second})
+	u.trustedOrigin = srv.URL
 
-	_, err := u.DownloadUpdate(srv.URL+"/download", nil)
+	_, _, err := u.downloadAsset(context.Background(), githubAsset{BrowserDownloadURL: srv.URL + "/download"}, nil)
 	if err == nil {
-		t.Error("expected error for size mismatch, got nil")
+		t.Fatal("expected error for size mismatch, got nil")
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "incomplete") && !strings.Contains(strings.ToLower(err.Error()), "interrupt") {
 		t.Errorf("error %q should mention incomplete download", err.Error())
@@ -476,35 +481,23 @@ func TestExtractEmptyArchive(t *testing.T) {
 // ─── 4.20-4.21 Windows install script generation ────────
 
 func TestInstallWindows_ScriptContent(t *testing.T) {
-	// This test verifies the logic of building the PS script,
-	// not the actual execution (which requires Windows).
-	if runtime.GOOS != "windows" {
-		t.Skip("skipping Windows-specific test on non-Windows platform")
-	}
+	// Verifies the generated PS script, not its execution (needs Windows).
+	script := windowsUpdateScript(4242, `C:\Temp\stage\papeer.exe`, `C:\Program Files\o'brien\papeer.exe`)
 
-	exePath, _ := os.Executable()
-	newExe := filepath.Join(os.TempDir(), "papeer-update", "papeer.exe")
-
-	script := fmt.Sprintf(`Start-Sleep -Seconds 3
-Copy-Item -Path "%s" -Destination "%s" -Force
-Start-Process -FilePath "%s"
-Remove-Item -Path $MyInvocation.MyCommand.Path -Force
-`, newExe, exePath, exePath)
-
-	if !strings.Contains(script, "Copy-Item") {
-		t.Error("script missing Copy-Item")
+	for _, want := range []string{
+		"$ErrorActionPreference = 'Stop'",
+		"Wait-Process -Id 4242",
+		`Copy-Item -LiteralPath 'C:\Temp\stage\papeer.exe' -Destination 'C:\Program Files\o''brien\papeer.exe' -Force`,
+		`Start-Process -FilePath 'C:\Program Files\o''brien\papeer.exe'`,
+		"$MyInvocation.MyCommand.Path",
+		"-lt 10", // Copy-Item is retried
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script missing %q:\n%s", want, script)
+		}
 	}
-	if !strings.Contains(script, "Start-Process") {
-		t.Error("script missing Start-Process")
-	}
-	if !strings.Contains(script, "Remove-Item") {
-		t.Error("script missing Remove-Item")
-	}
-	if !strings.Contains(script, "$MyInvocation.MyCommand.Path") {
-		t.Error("script missing self-delete")
-	}
-	if !strings.Contains(script, "Start-Sleep -Seconds 3") {
-		t.Error("script missing sleep")
+	if strings.Contains(script, "Start-Sleep -Seconds 3") {
+		t.Error("script should wait for the PID, not a fixed sleep")
 	}
 }
 
@@ -557,69 +550,33 @@ func TestFullCycleMock(t *testing.T) {
 		zw.Close()
 	}
 
-	downloadCalled := false
-	downloadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		downloadCalled = true
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", assetData.Len()))
-		w.Write(assetData.Bytes())
-	}))
-	defer downloadSrv.Close()
+	pub, priv := testKeys(t)
+	withPublicKey(t, pub)
+	rs := newReleaseServer(t, assetData.Bytes())
+	rs.signWith(priv)
 
-	apiCalled := false
-	apiMux := http.NewServeMux()
-	apiMux.HandleFunc("/repos/qnqatop/papeer/releases/latest", func(w http.ResponseWriter, r *http.Request) {
-		apiCalled = true
-		assetName := "papeer-macos-universal.zip"
-		if runtime.GOOS == "linux" {
-			assetName = "papeer-linux-amd64.tar.gz"
-		} else if runtime.GOOS == "windows" {
-			assetName = "papeer-windows-amd64.zip"
-		}
-		json.NewEncoder(w).Encode(githubRelease{
-			TagName: "v99.0.0",
-			HTMLURL: "https://github.com/qnqatop/papeer/releases/tag/v99.0.0",
-			Body:    "test release",
-			Assets: []githubAsset{
-				{Name: assetName, BrowserDownloadURL: downloadSrv.URL + "/dl"},
-			},
-		})
-	})
-
-	apiSrv := httptest.NewServer(apiMux)
-	defer apiSrv.Close()
-
-	u := NewUpdater("v1.0.0")
-	u.SetAPIBase(apiSrv.URL)
-
+	u := rs.updater(t)
 	info, err := u.CheckForUpdates()
 	if err != nil {
 		t.Fatalf("CheckForUpdates: %v", err)
-	}
-	if !apiCalled {
-		t.Error("API was not called")
 	}
 	if !info.HasUpdate {
 		t.Error("expected HasUpdate=true")
 	}
 
-	stagingDir := filepath.Join(t.TempDir(), "staging")
-	archivePath, err := u.DownloadUpdate(info.AssetURL, nil)
-	if err != nil {
-		t.Fatalf("DownloadUpdate: %v", err)
+	if err := u.PrepareUpdate(context.Background(), nil); err != nil {
+		t.Fatalf("PrepareUpdate: %v", err)
 	}
-	if !downloadCalled {
+	stagingDir := u.GetStagingDir()
+	defer os.RemoveAll(stagingDir)
+	if rs.archiveHits == 0 {
 		t.Error("download was not called")
 	}
-	defer os.Remove(archivePath)
 
-	binary, err := u.ExtractArchive(archivePath, stagingDir)
-	if err != nil {
-		t.Fatalf("ExtractArchive: %v", err)
-	}
-
+	binary := findExtractedBinary(stagingDir)
 	binfo, err := os.Stat(binary)
 	if err != nil || binfo.Size() == 0 {
-		t.Error("extracted binary is missing or empty")
+		t.Fatal("extracted binary is missing or empty")
 	}
 
 	t.Logf("Full cycle OK: binary at %s (%d bytes)", binary, binfo.Size())

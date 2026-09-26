@@ -4,6 +4,13 @@
 # so the UI footer can show exactly which commit a tester is on.
 VERSION ?= $(shell git describe --always --dirty --tags 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/qnqatop/papeer/internal/app.Version=$(VERSION)
+# Optional base64 ed25519 public key the updater verifies SHA256SUMS.sig with
+# (see cmd/release-sign). Empty = hash-only verification (dev builds).
+UPDATE_PUBLIC_KEY ?=
+LDFLAGS += -X github.com/qnqatop/papeer/internal/updater.PublicKey=$(UPDATE_PUBLIC_KEY)
+# Extra Go build tags for `make dev` (scripts/test-update.sh sets mockupdate).
+WAILS_TAGS ?=
+DEV_TAGS := $(if $(WAILS_TAGS),-tags "$(WAILS_TAGS)")
 
 # Build for every supported platform.
 all: windows mac linux
@@ -32,9 +39,9 @@ dev:
 	@echo "==> Starting wails dev — version $(VERSION)..."
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then \
 		. "$$HOME/.nvm/nvm.sh" && nvm use 22 >/dev/null && \
-		wails dev -ldflags "$(LDFLAGS)"; \
+		wails dev $(DEV_TAGS) -ldflags "$(LDFLAGS)"; \
 	else \
-		wails dev -ldflags "$(LDFLAGS)"; \
+		wails dev $(DEV_TAGS) -ldflags "$(LDFLAGS)"; \
 	fi
 
 # Vite-only dev server (no Wails app). Useful when iterating on UI alone

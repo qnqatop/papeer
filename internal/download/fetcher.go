@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -146,15 +147,24 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	// acquisition). Old upstream APIs still hand out the legacy host.
 	rawURL = rewriteDeadURL(rawURL)
 
+	// Compute the Referer per URL. CyberLeninka serves a captcha instead of the
+	// PDF unless the request carries a Referer pointing at the article page (the
+	// PDF URL without its trailing /pdf). It is derived from each fetched URL,
+	// so a PDF link extracted from HTML never inherits another page's Referer.
+	download := func(u string) ([]byte, string, error) {
+		return client.DownloadFileWithReferer(ctx, u, refererForURL(u))
+	}
+
 	// Step 1: download the URL.
-	data, _, err := client.DownloadFile(ctx, rawURL)
+	data, _, err := download(rawURL)
 	if err != nil {
-		// HTTP-level block (403 from ACM/IEEE/Elsevier after all UA strategies,
-		// 4xx/5xx with no body, network reset). DownloadFile gives us nothing
+		// HTTP-level bot wall (403 from ACM/IEEE/Elsevier after all UA
+		// strategies, 429/503 challenge pages). DownloadFile gives us nothing
 		// to validate, so the regular HTML→Chrome path never triggers. Try
 		// Chrome here as a last resort — it carries cookies and a real JS
-		// runtime and frequently slips past UA-based bot walls.
-		if ChromeAvailable() {
+		// runtime and frequently slips past UA-based bot walls. Other errors
+		// (404, network failures, bad schemes) won't be fixed by a browser.
+		if isBotWallError(err) && isHTTPURL(rawURL) && ChromeAvailable() {
 			if chromeErr := FetchPDFWithChrome(ctx, rawURL, dest); chromeErr == nil {
 				return nil
 			} else if !errors.Is(chromeErr, ErrChromeNotFound) {
@@ -178,10 +188,10 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 		}
 		ok, solveErr := solveAkamaiInterstitial(ctx, client, rawURL, data)
 		if solveErr != nil {
-			return fmt.Errorf("Akamai bypass for %s failed (round %d): %w", rawURL, round+1, solveErr)
+			return fmt.Errorf("akamai bypass for %s failed (round %d): %w", rawURL, round+1, solveErr)
 		}
 		if !ok {
-			return fmt.Errorf("Akamai bypass for %s rejected by server (round %d)", rawURL, round+1)
+			return fmt.Errorf("akamai bypass for %s rejected by server (round %d)", rawURL, round+1)
 		}
 		// Brief pause so the new ak_bmsc cookie registers on Akamai edge
 		// before we re-fetch — the JS interstitial does the same.
@@ -191,7 +201,7 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 		case <-time.After(500 * time.Millisecond):
 		}
 		// Re-fetch with the fresh ak_bmsc cookie in the jar.
-		data, _, err = client.DownloadFile(ctx, rawURL)
+		data, _, err = download(rawURL)
 		if err != nil {
 			return fmt.Errorf("downloading after Akamai bypass %s: %w", rawURL, err)
 		}
@@ -201,7 +211,7 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	if looksLikeHTML(data) {
 		pdfURL := ExtractPDFFromHTML(string(data), rawURL)
 		if pdfURL != "" && pdfURL != rawURL {
-			data2, _, err := client.DownloadFile(ctx, pdfURL)
+			data2, _, err := download(pdfURL)
 			if err == nil {
 				data = data2
 			}
@@ -211,14 +221,16 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	// Step 3b: still HTML at a /pdf URL → wait for the JS countdown and
 	// re-fetch the same URL. The first hit set the cookies the publisher
 	// needs to stream the PDF binary on the next request.
-	if looksLikeHTML(data) && isPDFEndpoint(rawURL) {
+	// CyberLeninka's HTML at a /pdf URL is a captcha, not a countdown: waiting
+	// and re-fetching only hammers it harder, so skip the retries there.
+	if looksLikeHTML(data) && isPDFEndpoint(rawURL) && !isCyberLeninkaURL(rawURL) {
 		for _, wait := range interstitialRetryDelays {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-time.After(wait):
 			}
-			next, _, err := client.DownloadFile(ctx, rawURL)
+			next, _, err := download(rawURL)
 			if err != nil {
 				break
 			}
@@ -239,7 +251,7 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 	// detection is left earlier in the flow so we still skip the cheap
 	// HTML-scanning round when we can prove it's a bot wall.
 	if err := ValidatePDF(data); err != nil {
-		if looksLikeHTML(data) && ChromeAvailable() {
+		if looksLikeHTML(data) && isHTTPURL(rawURL) && ChromeAvailable() {
 			if chromeErr := FetchPDFWithChrome(ctx, rawURL, dest); chromeErr == nil {
 				return nil
 			} else if !errors.Is(chromeErr, ErrChromeNotFound) {
@@ -249,11 +261,77 @@ func FetchPDF(ctx context.Context, client *httpclient.Client, rawURL string, des
 		return fmt.Errorf("PDF validation failed for %s: %w", rawURL, err)
 	}
 
-	if err := os.WriteFile(dest, data, 0o644); err != nil {
+	if err := writeFileAtomic(dest, data); err != nil {
 		return fmt.Errorf("writing %s: %w", dest, err)
 	}
 
 	return nil
+}
+
+// refererForURL returns the Referer to send when downloading rawURL, or "" when
+// no special Referer is needed. CyberLeninka gates its PDF endpoint behind a
+// Referer pointing at the article page — the same URL without the trailing
+// "/pdf" — otherwise it answers with a captcha/HTML.
+func refererForURL(rawURL string) string {
+	if !isCyberLeninkaURL(rawURL) {
+		return ""
+	}
+	return strings.TrimSuffix(rawURL, "/pdf")
+}
+
+// isCyberLeninkaURL reports whether rawURL points at cyberleninka.ru (with or
+// without "www."), matching the parsed host rather than a substring.
+func isCyberLeninkaURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	return host == "cyberleninka.ru"
+}
+
+// isBotWallError reports whether a DownloadFile error looks like a bot wall
+// that a real browser might get past: 403, or a 429/503 challenge.
+func isBotWallError(err error) bool {
+	var se *httpclient.StatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code == 403 || se.Code == 429 || se.Code == 503
+}
+
+// isHTTPURL reports whether rawURL is an absolute http(s) URL.
+func isHTTPURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	s := strings.ToLower(u.Scheme)
+	return s == "http" || s == "https"
+}
+
+// writeFileAtomic writes data to a temp file next to dest and renames it
+// into place, so a crash or concurrent reader never sees a half-written PDF.
+func writeFileAtomic(dest string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".papeer-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmpName, 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmpName, dest)
+	}
+	if err != nil {
+		_ = os.Remove(tmpName)
+	}
+	return err
 }
 
 // isPDFEndpoint reports whether the URL is most likely the publisher's PDF

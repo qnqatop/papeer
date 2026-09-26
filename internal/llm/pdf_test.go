@@ -3,6 +3,7 @@ package llm
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,8 +92,49 @@ func escapePDF(s string) string {
 	return result
 }
 
-func writeTestFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0o644)
+func TestExtractWithGoLib_RecoversFromPanic(t *testing.T) {
+	// A well-formed xref whose entry for object 1 points at object 2 makes
+	// ledongthuc/pdf panic ("loading 1 0 R: found 2 0 R") when NumPage
+	// resolves the catalog. Extraction must return an error instead.
+	body := "%PDF-1.4\n2 0 obj\n<< >>\nendobj\n"
+	xref := "xref\n0 2\n0000000000 65535 f \n0000000009 00000 n \n"
+	content := body + xref + "trailer\n<< /Size 2 /Root 1 0 R >>\nstartxref\n" +
+		itoa(len(body)) + "\n%%EOF"
+	path := filepath.Join(t.TempDir(), "mismatch.pdf")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := extractWithGoLib(path)
+	if err == nil || !strings.Contains(err.Error(), "panic") {
+		t.Fatalf("err = %v, want recovered panic", err)
+	}
+
+	// Truncated/garbage input must also fail cleanly.
+	full := minimalPDF("hello world")
+	for name, c := range map[string]string{
+		"truncated": full[:len(full)/2] + "\nstartxref\n9\n%%EOF",
+		"garbage":   "%PDF-1.4\n" + strings.Repeat("\x00\xff(", 100) + "\nstartxref\n0\n%%EOF",
+	} {
+		p := filepath.Join(t.TempDir(), name+".pdf")
+		if err := os.WriteFile(p, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := extractWithGoLib(p); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+}
+
+func TestTruncateText(t *testing.T) {
+	if got := truncateText("héllo", 2); got != "h" {
+		t.Errorf("truncateText split a rune: %q", got)
+	}
+	var c cappedBuffer
+	c.max = 3
+	n, err := c.Write([]byte("abcdef"))
+	if n != 6 || err != nil || c.buf.String() != "abc" {
+		t.Errorf("cappedBuffer: n=%d err=%v buf=%q", n, err, c.buf.String())
+	}
 }
 
 func itoa(n int) string {

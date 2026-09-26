@@ -120,6 +120,15 @@
                 />
               </n-space>
 
+              <!-- lang_scope -->
+              <n-space align="center" :size="4">
+                <span style="font-size: 13px">{{ t('axes.langScope') }}</span>
+                <n-radio-group v-model:value="axis.lang_scope" size="small">
+                  <n-radio-button value="en">{{ t('axes.langScopeEn') }}</n-radio-button>
+                  <n-radio-button value="ru">{{ t('axes.langScopeRu') }}</n-radio-button>
+                </n-radio-group>
+              </n-space>
+
               <!-- Queries -->
               <n-card size="small" :title="t('axes.queries')" embedded>
                 <n-space vertical :size="8">
@@ -297,7 +306,7 @@ import { useOnboardingStore } from '../stores/onboarding'
 import {
   NCard, NEmpty, NSpace, NButton, NInput, NInputNumber, NIcon,
   NTag, NBadge, NCollapse, NCollapseItem, NPopconfirm, NSpin, NAlert,
-  NDropdown, NTooltip, NH3, NText,
+  NDropdown, NTooltip, NH3, NText, NRadioGroup, NRadioButton,
   useMessage,
 } from 'naive-ui'
 import { HelpCircleOutline } from '@vicons/ionicons5'
@@ -464,6 +473,7 @@ async function addAxis() {
     axis_key: `axis-${next}`,
     description: '',
     position: next,
+    lang_scope: 'en',
     queries: [],
     keywords: [],
   })

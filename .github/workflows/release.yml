@@ -47,13 +47,17 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
       - name: Build
         shell: bash
+        env:
+          # Public half of UPDATE_SIGNING_KEY (repo variable). Empty is allowed:
+          # the updater then falls back to hash-only verification.
+          UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
         run: |
           wails build -platform ${{ matrix.platform }} -clean \
-            -ldflags "-X github.com/qnqatop/papeer/internal/app.Version=${{ github.ref_name }}"
+            -ldflags "-X github.com/qnqatop/papeer/internal/app.Version=${{ github.ref_name }} -X github.com/qnqatop/papeer/internal/updater.PublicKey=${UPDATE_PUBLIC_KEY}"
 
       - name: Package (macOS)
         if: matrix.os == 'macos-latest'
@@ -88,15 +92,52 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      # The updater refuses to install a release without SHA256SUMS, and (in
+      # builds with a public key) without a valid SHA256SUMS.sig.
+      - name: Generate and sign SHA256SUMS
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_PUBLIC_KEY: ${{ vars.UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p checksums
+          # Bare file names (no directories), one line per artifact.
+          find artifacts -type f -print0 | sort -z | while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")")
+          done > checksums/SHA256SUMS
+          cat checksums/SHA256SUMS
+          if [ -n "$UPDATE_SIGNING_KEY" ]; then
+            go run ./cmd/release-sign sign -key-env UPDATE_SIGNING_KEY checksums/SHA256SUMS
+            if [ -n "$UPDATE_PUBLIC_KEY" ]; then
+              go run ./cmd/release-sign verify -pub "$UPDATE_PUBLIC_KEY" checksums/SHA256SUMS
+            fi
+          elif [ -n "$UPDATE_PUBLIC_KEY" ]; then
+            echo "::error::UPDATE_PUBLIC_KEY is set but secret UPDATE_SIGNING_KEY is missing; clients would reject this release"
+            exit 1
+          else
+            echo "::warning::UPDATE_SIGNING_KEY not set; publishing unsigned SHA256SUMS"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*
+            checksums/*
           generate_release_notes: true
           fail_on_unmatched_files: true

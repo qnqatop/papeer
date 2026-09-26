@@ -125,12 +125,8 @@ const percentage = computed(() => {
   return Math.round((progressStore.current / progressStore.total) * 100)
 })
 
-const doneCount = computed(() =>
-  progressStore.downloadEvents.filter(e => e.type === 'done').length
-)
-const failCount = computed(() =>
-  progressStore.downloadEvents.filter(e => e.type === 'fail').length
-)
+const doneCount = computed(() => progressStore.downloadDone)
+const failCount = computed(() => progressStore.downloadFailed)
 const completed = computed(() =>
   progressStore.downloadEvents.some(e => e.type === 'complete')
 )

@@ -17,7 +17,7 @@ export function renderMarkdown(text: string): string {
   // Block math $$...$$ -> centered block
   html = html.replace(/\$\$([^$]+)\$\$/g, '<div class="math-block">$1</div>')
   // Inline math $...$ -> code-styled span
-  html = html.replace(/\$([^$]+)\$/g, '<code class="math-inline">$1</code>')
+  html = html.replace(/\$([^$\n]+)\$/g, '<code class="math-inline">$1</code>')
 
   // Tables: convert | ... | blocks to HTML tables
   html = html.replace(/((?:^\|.+\|$\n?)+)/gm, (block: string) => {
@@ -50,5 +50,8 @@ export function renderMarkdown(text: string): string {
   html = html.replace(/<p><table>/g, '<table>')
   html = html.replace(/<\/table><\/p>/g, '</table>')
 
-  return DOMPurify.sanitize(html)
+  // The leading newline (trimmed again) works around DOMPurify >= 3.4.12
+  // unwrapping the first top-level element (e.g. <table>) under happy-dom's
+  // NodeIterator; real browsers produce identical output either way.
+  return DOMPurify.sanitize('\n' + html).trimStart()
 }

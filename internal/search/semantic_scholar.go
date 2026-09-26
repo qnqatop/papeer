@@ -21,6 +21,8 @@ func NewSemanticScholar(c *httpclient.Client) *SemanticScholar {
 
 func (s *SemanticScholar) Name() string { return "semantic_scholar" }
 
+func (s *SemanticScholar) Language() string { return "en" }
+
 func (s *SemanticScholar) Search(ctx context.Context, query string, limit int, yearMin int) ([]RawPaper, error) {
 	fields := "title,abstract,authors,year,venue,externalIds,openAccessPdf,citationCount"
 	base := s.baseURL

@@ -41,5 +41,9 @@ func PDFHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only validated PDFs are stored, so pin the type and forbid sniffing —
+	// the webview must never render a stored file as HTML.
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, path)
 }

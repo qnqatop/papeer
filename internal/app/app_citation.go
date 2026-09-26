@@ -113,17 +113,17 @@ func (a *App) FetchCitations(profileID int64) error {
 	fetcher := search.NewCitationFetcher(client)
 
 	ctx, cancel := context.WithCancel(a.ctx)
-	a.setCancel(cancel)
+	token := a.setCancel(cancel)
 
-	go func() {
+	a.safeGo("FetchCitations", func() {
 		defer citationMu.Unlock()
 		defer func() {
 			cancel()
-			a.clearCancel()
+			a.clearCancel(token)
 		}()
 
 		a.fetchCitationsWorker(ctx, profileID, papers, fetcher)
-	}()
+	})
 
 	return nil
 }
@@ -530,6 +530,11 @@ func (a *App) ResolveAndAddExternal(profileID, externalID int64, axisID *int64, 
 	if err := a.db.UpsertPaper(paper); err != nil {
 		return nil, fmt.Errorf("add external paper: %w", err)
 	}
+	// The paper may already exist (matched by DOI/title): UpsertPaper then
+	// merges metadata but keeps the old status.
+	if err := a.applyRequestedStatus(paper.ID, status); err != nil {
+		return nil, err
+	}
 	if ec.S2PaperID != "" {
 		if err := a.db.SetPaperS2ID(paper.ID, ec.S2PaperID); err != nil {
 			runtime.LogWarningf(a.ctx, "set s2 id for new paper %d: %v", paper.ID, err)
@@ -537,6 +542,23 @@ func (a *App) ResolveAndAddExternal(profileID, externalID int64, axisID *int64, 
 	}
 
 	return a.db.GetPaper(paper.ID)
+}
+
+// applyRequestedStatus sets status on a paper that ResolveAndAddExternal may
+// have merged into an existing row, without demoting "downloaded" to
+// "approved" (the PDF is already there).
+func (a *App) applyRequestedStatus(paperID int64, status string) error {
+	stored, err := a.db.GetPaper(paperID)
+	if err != nil {
+		return fmt.Errorf("load added paper: %w", err)
+	}
+	if stored.Status == status || (stored.Status == "downloaded" && status == "approved") {
+		return nil
+	}
+	if err := a.db.UpdatePaperStatus(paperID, status); err != nil {
+		return fmt.Errorf("set status of existing paper: %w", err)
+	}
+	return nil
 }
 
 // ClearCitationData deletes all citation data for a profile and resets the

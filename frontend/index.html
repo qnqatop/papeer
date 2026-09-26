@@ -3,6 +3,15 @@
 <head>
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <!--
+      CSP: everything same-origin (Wails asset server + /wails/*.js runtime).
+      style 'unsafe-inline': naive-ui injects <style> at runtime.
+      'wasm-unsafe-eval': pdf.js wasm decoders if the worker falls back to the main thread.
+      ws:/localhost: vite HMR under `wails dev` only.
+      frame-ancestors is not allowed in <meta> (ignored with a console error), so it is omitted.
+    -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ws: wss: http://localhost:* ws://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'"/>
     <link rel="icon" type="image/svg+xml" href="/src/assets/images/logo.svg"/>
     <title>Papeer</title>
 </head>

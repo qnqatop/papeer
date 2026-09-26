@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+
+	"github.com/qnqatop/papeer/internal/httpclient"
 )
 
 const (
@@ -64,7 +66,15 @@ func ValidatePDF(data []byte) error {
 }
 
 // ValidatePDFFile reads a file from disk and validates it as a PDF.
+// Files above httpclient.MaxDownloadSize are rejected without being read.
 func ValidatePDFFile(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("reading file: %w", err)
+	}
+	if fi.Size() > httpclient.MaxDownloadSize {
+		return fmt.Errorf("file too large (%d bytes)", fi.Size())
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading file: %w", err)
