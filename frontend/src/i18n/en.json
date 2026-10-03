@@ -309,7 +309,7 @@
         "about": "About"
       },
       "searchDescription": "Search works through academic APIs and is configured individually for each research.",
-      "searchDetail": "Search runs in parallel across Semantic Scholar, OpenAlex, Crossref, and ArXiv. Results are merged, deduplicated, and scored by keyword relevance (0–10). Configure search queries and keywords on the Search page.",
+      "searchDetail": "Search runs in parallel across Semantic Scholar, OpenAlex, Crossref, and ArXiv (English axes) or CyberLeninka (Russian axes). Results are merged, deduplicated, and scored by keyword relevance (0–10). Configure search queries and keywords on the Search page.",
       "about": {
         "subtitle": "Academic Paper Exploration & Processing Assistant",
         "description": "Search across Scopus, Semantic Scholar, OpenAlex, Crossref, and ArXiv.\nAI summaries via any OpenAI-compatible LLM.\nCitation graph and approval-based recommendations.",

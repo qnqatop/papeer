@@ -197,6 +197,44 @@
               {{ t('v2.settings.searchDetail') }}
             </n-text>
           </n-space>
+
+          <n-divider style="margin: 16px 0" />
+
+          <n-text strong style="font-size: 13px; display: block; margin-bottom: 4px">{{ t('settings.s2ApiKey') }}</n-text>
+          <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 8px">{{ t('settings.s2ApiKeyHint') }}</n-text>
+          <n-text v-if="s2KeyStatus.set" depth="2" style="font-size: 12px; display: block; margin-bottom: 8px">
+            {{ t('settings.s2ApiKeyCurrent', { mask: s2KeyStatus.masked }) }}
+          </n-text>
+          <n-space :size="8" align="center">
+            <n-input
+              v-model:value="s2ApiKey"
+              type="password"
+              show-password-on="click"
+              :placeholder="s2KeyStatus.set ? t('settings.s2ApiKeyReplacePlaceholder') : t('settings.s2ApiKeyPlaceholder')"
+              style="width: 360px"
+              @keydown.enter="saveS2ApiKey"
+            />
+            <n-button :loading="savingS2Key" :disabled="!s2ApiKey.trim()" @click="saveS2ApiKey">{{ t('common.save') }}</n-button>
+            <n-popconfirm v-if="s2KeyStatus.set" @positive-click="clearS2ApiKey">
+              <template #trigger>
+                <n-button :disabled="savingS2Key">{{ t('settings.s2ApiKeyClear') }}</n-button>
+              </template>
+              {{ t('settings.s2ApiKeyClearConfirm') }}
+            </n-popconfirm>
+          </n-space>
+
+          <n-divider style="margin: 16px 0" />
+
+          <n-text depth="3" style="font-size: 13px; display: block; margin-bottom: 8px">{{ t('settings.checkProvidersHint') }}</n-text>
+          <n-button :loading="checkingProviders" @click="checkProviders">{{ t('settings.checkProviders') }}</n-button>
+          <div v-if="providerStatus.length > 0" style="margin-top: 12px; display: flex; flex-direction: column; gap: 4px">
+            <div v-for="s in providerStatus" :key="s.name" style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-family: var(--font-mono, monospace)">
+              <span :style="{ color: s.ok ? '#10b981' : '#ef4444' }">{{ s.ok ? '✓' : '✗' }}</span>
+              <span style="min-width: 120px">{{ s.name }}</span>
+              <span v-if="s.ok" style="color: var(--text-tertiary)">{{ s.latency_ms }} ms</span>
+              <span v-else style="color: #ef4444; font-size: 11px">{{ s.error }}</span>
+            </div>
+          </div>
         </template>
 
         <!-- Monitoring -->
@@ -265,44 +303,6 @@
             <n-input v-model:value="proxyURL" :placeholder="t('settings.proxyPlaceholder')" style="width: 360px" @blur="saveProxy" @keydown.enter="saveProxy" />
             <n-button :loading="testingProxy" :disabled="!proxyURL" @click="testProxy">{{ t('settings.testProxy') }}</n-button>
           </n-space>
-
-          <n-divider style="margin: 16px 0" />
-
-          <n-text strong style="font-size: 13px; display: block; margin-bottom: 4px">{{ t('settings.s2ApiKey') }}</n-text>
-          <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 8px">{{ t('settings.s2ApiKeyHint') }}</n-text>
-          <n-text v-if="s2KeyStatus.set" depth="2" style="font-size: 12px; display: block; margin-bottom: 8px">
-            {{ t('settings.s2ApiKeyCurrent', { mask: s2KeyStatus.masked }) }}
-          </n-text>
-          <n-space :size="8" align="center">
-            <n-input
-              v-model:value="s2ApiKey"
-              type="password"
-              show-password-on="click"
-              :placeholder="s2KeyStatus.set ? t('settings.s2ApiKeyReplacePlaceholder') : t('settings.s2ApiKeyPlaceholder')"
-              style="width: 360px"
-              @keydown.enter="saveS2ApiKey"
-            />
-            <n-button :loading="savingS2Key" :disabled="!s2ApiKey.trim()" @click="saveS2ApiKey">{{ t('common.save') }}</n-button>
-            <n-popconfirm v-if="s2KeyStatus.set" @positive-click="clearS2ApiKey">
-              <template #trigger>
-                <n-button :disabled="savingS2Key">{{ t('settings.s2ApiKeyClear') }}</n-button>
-              </template>
-              {{ t('settings.s2ApiKeyClearConfirm') }}
-            </n-popconfirm>
-          </n-space>
-
-          <n-divider style="margin: 16px 0" />
-
-          <n-text depth="3" style="font-size: 13px; display: block; margin-bottom: 8px">{{ t('settings.checkProvidersHint') }}</n-text>
-          <n-button :loading="checkingProviders" @click="checkProviders">{{ t('settings.checkProviders') }}</n-button>
-          <div v-if="providerStatus.length > 0" style="margin-top: 12px; display: flex; flex-direction: column; gap: 4px">
-            <div v-for="s in providerStatus" :key="s.name" style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-family: var(--font-mono, monospace)">
-              <span :style="{ color: s.ok ? '#10b981' : '#ef4444' }">{{ s.ok ? '✓' : '✗' }}</span>
-              <span style="min-width: 120px">{{ s.name }}</span>
-              <span v-if="s.ok" style="color: var(--text-tertiary)">{{ s.latency_ms }} ms</span>
-              <span v-else style="color: #ef4444; font-size: 11px">{{ s.error }}</span>
-            </div>
-          </div>
         </template>
 
         <!-- About -->
