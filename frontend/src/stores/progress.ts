@@ -180,7 +180,9 @@ export const useProgressStore = defineStore('progress', () => {
       pushCapped(downloadEvents.value, event)
       if (event.type === 'done') downloadDone.value++
       else if (event.type === 'fail') downloadFailed.value++
-      if (event.type === 'done' || event.type === 'fail') recordDownloadResult(event)
+      // 'start' clears a stale failure row as soon as a retry begins;
+      // a new 'fail' puts it back with the fresh reason.
+      if (event.type === 'start' || event.type === 'done' || event.type === 'fail') recordDownloadResult(event)
       current.value = event.current
       total.value = event.total
       if (event.type === 'start') {

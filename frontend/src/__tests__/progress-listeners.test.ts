@@ -69,6 +69,20 @@ describe('progress store failed downloads and radar runs', () => {
     expect(store.failedDownloads).toEqual([])
   })
 
+  it('drops a failure row when its retry starts and restores it on a new failure', () => {
+    const store = useProgressStore()
+    store.startListening()
+    handlers['download:progress']({ type: 'fail', paper_id: 1, title: 'A', error: 'all sources exhausted', current: 1, total: 1 })
+    handlers['download:done'](null)
+    expect(store.failedDownloads.map(f => f.paper_id)).toEqual([1])
+
+    handlers['download:progress']({ type: 'start', paper_id: 1, title: 'A', current: 1, total: 1 })
+    expect(store.failedDownloads).toEqual([])
+
+    handlers['download:progress']({ type: 'fail', paper_id: 1, title: 'A', error: 'captcha required', current: 1, total: 1 })
+    expect(store.failedDownloads.map(f => f.error)).toEqual(['captcha required'])
+  })
+
   it('keeps the latest radar runs', () => {
     const store = useProgressStore()
     store.startListening()

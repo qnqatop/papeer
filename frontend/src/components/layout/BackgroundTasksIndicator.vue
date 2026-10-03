@@ -153,14 +153,16 @@ const hasHistory = computed(() =>
   progressStore.failedDownloads.length > 0 || progressStore.radarRuns.length > 0,
 )
 
-// Paper ids whose retry RPC is in flight (the download itself then reports
-// through download:progress and clears the row on success).
+// Paper ids whose retry RPC is in flight.
 const retrying = ref(new Set<number>())
 
 async function retry(paperId: number) {
   retrying.value = new Set(retrying.value).add(paperId)
   try {
     await DownloadPaper(paperId)
+    // The download is running now; its progress shows above, and a new
+    // failure brings the row back.
+    progressStore.dismissFailedDownload(paperId)
     message.info(t('download.retryStarted'))
   } catch (e) {
     message.error(localizeBackendError(e, t))
