@@ -1,4 +1,5 @@
 import type { GlobalThemeOverrides } from 'naive-ui'
+import type { ThemeMode } from './mode'
 
 /**
  * Naive UI theme overrides for Papeer.
@@ -10,7 +11,7 @@ import type { GlobalThemeOverrides } from 'naive-ui'
  * - Warning: Amber (#f59e0b)
  * - Error: Red (#ef4444)
  */
-export const themeOverrides: GlobalThemeOverrides = {
+const darkOverrides: GlobalThemeOverrides = {
   common: {
     // Primary — Violet
     primaryColor: '#7c5cff',
@@ -301,4 +302,129 @@ export const themeOverrides: GlobalThemeOverrides = {
     color: '#334155',
     textColor: '#e2e8f0',
   },
+}
+
+/**
+ * Light-mode deltas applied on top of the dark overrides: only the
+ * surface, text, border and shadow values differ; sizes, radii and the brand
+ * palette are shared.
+ */
+const lightPatch: GlobalThemeOverrides = {
+  common: {
+    primaryColorSuppl: '#6a44f0',
+    infoColorSuppl: '#6a44f0',
+    bodyColor: '#f8fafc',
+    cardColor: '#ffffff',
+    modalColor: '#ffffff',
+    popoverColor: '#ffffff',
+    tableColor: '#ffffff',
+    inputColor: '#ffffff',
+    textColorBase: '#0f172a',
+    textColor1: '#0f172a',
+    textColor2: '#334155',
+    textColor3: '#64748b',
+    borderColor: 'rgba(15, 23, 42, 0.12)',
+    dividerColor: 'rgba(15, 23, 42, 0.08)',
+  },
+  Card: {
+    color: '#ffffff',
+    borderColor: 'rgba(15, 23, 42, 0.08)',
+    boxShadow: '0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04)',
+  },
+  Button: {
+    textColorGhostPrimary: '#6a44f0',
+    textColorGhostHoverPrimary: '#7c5cff',
+    textColorGhostPressedPrimary: '#5836d1',
+    color: 'rgba(15, 23, 42, 0.03)',
+    colorHover: 'rgba(15, 23, 42, 0.06)',
+    colorPressed: 'rgba(15, 23, 42, 0.09)',
+    border: '1px solid rgba(15, 23, 42, 0.15)',
+    textColor: '#334155',
+    textColorHover: '#1e293b',
+    textColorPressed: '#0f172a',
+  },
+  Menu: {
+    itemTextColor: '#475569',
+    itemTextColorHover: '#0f172a',
+    itemTextColorActive: '#6a44f0',
+    itemTextColorActiveHover: '#5836d1',
+    itemIconColor: '#64748b',
+    itemIconColorHover: '#0f172a',
+    itemIconColorActive: '#6a44f0',
+    itemIconColorActiveHover: '#5836d1',
+  },
+  Tabs: {
+    tabTextColorLine: '#64748b',
+    tabTextColorActiveLine: '#6a44f0',
+    tabTextColorHoverLine: '#334155',
+    tabTextColorSegment: '#64748b',
+    tabTextColorActiveSegment: '#0f172a',
+    colorSegment: 'rgba(15, 23, 42, 0.05)',
+    tabColorSegment: '#ffffff',
+  },
+  Tag: {
+    textColorInfo: '#6a44f0',
+    textColorSuccess: '#15803d',
+    textColorWarning: '#b45309',
+    textColorError: '#dc2626',
+  },
+  Input: {
+    color: '#ffffff',
+    colorFocus: '#ffffff',
+    border: '1px solid rgba(15, 23, 42, 0.15)',
+  },
+  DataTable: {
+    thColor: '#f1f5f9',
+    thTextColor: '#475569',
+    tdTextColor: '#1e293b',
+    borderColor: 'rgba(15, 23, 42, 0.06)',
+  },
+  Statistic: {
+    labelTextColor: '#64748b',
+  },
+  Collapse: {
+    titleTextColor: '#1e293b',
+    arrowColor: '#94a3b8',
+    dividerColor: 'rgba(15, 23, 42, 0.08)',
+  },
+  Popover: {
+    color: '#ffffff',
+  },
+  Modal: {
+    color: '#ffffff',
+    boxShadow: '0 8px 32px rgba(15, 23, 42, 0.18)',
+  },
+  Pagination: {
+    itemTextColorActive: '#6a44f0',
+  },
+  Progress: {
+    railColor: 'rgba(15, 23, 42, 0.08)',
+  },
+  Divider: {
+    color: 'rgba(15, 23, 42, 0.08)',
+  },
+  Scrollbar: {
+    color: 'rgba(15, 23, 42, 0.2)',
+    colorHover: 'rgba(15, 23, 42, 0.35)',
+  },
+  Tooltip: {
+    color: '#1e293b',
+    textColor: '#f8fafc',
+  },
+}
+
+type Section = Record<string, unknown>
+
+function mergeOverrides(base: GlobalThemeOverrides, patch: GlobalThemeOverrides): GlobalThemeOverrides {
+  const out: Record<string, Section> = {}
+  for (const [k, v] of Object.entries(base)) out[k] = { ...(v as Section) }
+  for (const [k, v] of Object.entries(patch)) out[k] = { ...(out[k] ?? {}), ...(v as Section) }
+  return out as GlobalThemeOverrides
+}
+
+const lightOverrides = mergeOverrides(darkOverrides, lightPatch)
+
+/** Naive UI overrides for the given mode (paired with darkTheme or the default light theme). */
+export function getThemeOverrides(mode: ThemeMode): GlobalThemeOverrides {
+  return mode === 'light' ? lightOverrides : darkOverrides
 }

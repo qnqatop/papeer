@@ -26,7 +26,7 @@ func (a *ArXiv) Language() string { return "en" }
 func (a *ArXiv) Search(ctx context.Context, query string, limit int, yearMin int) ([]RawPaper, error) {
 	base := a.baseURL
 	if base == "" {
-		base = "http://export.arxiv.org/api/query"
+		base = "https://export.arxiv.org/api/query"
 	}
 	u := fmt.Sprintf(
 		"%s?search_query=%s&start=0&max_results=%d&sortBy=relevance",
@@ -88,15 +88,17 @@ func extractArxivYear(published string) *int {
 }
 
 func extractArxivID(entryID string) string {
-	// Format: http://arxiv.org/abs/2301.12345v1
-	const prefix = "http://arxiv.org/abs/"
-	if strings.HasPrefix(entryID, prefix) {
-		id := entryID[len(prefix):]
-		// Strip version suffix (v1, v2, etc.)
-		if idx := strings.LastIndex(id, "v"); idx > 0 {
-			id = id[:idx]
+	// Format: http://arxiv.org/abs/2301.12345v1 (the Atom feed still uses
+	// http ids; accept https too in case arXiv switches).
+	for _, prefix := range []string{"http://arxiv.org/abs/", "https://arxiv.org/abs/"} {
+		if strings.HasPrefix(entryID, prefix) {
+			id := entryID[len(prefix):]
+			// Strip version suffix (v1, v2, etc.)
+			if idx := strings.LastIndex(id, "v"); idx > 0 {
+				id = id[:idx]
+			}
+			return id
 		}
-		return id
 	}
 	return ""
 }

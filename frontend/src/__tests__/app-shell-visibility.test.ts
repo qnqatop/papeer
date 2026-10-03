@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { sidebarKeys } from '../utils/navigation'
 
 /**
  * Unit tests for the visibility logic used in AppShell.vue.
@@ -11,12 +12,8 @@ describe('AppShell visibility logic', () => {
     return profilesArr.length === 0 && !loading
   }
 
-  // Simulates the menuOptions condition
-  function getMenuOptions(profiles: any[] | null | undefined): string[] {
-    const profilesArr = profiles || []
-    if (profilesArr.length === 0) return []
-    return ['search', 'papers', 'analysis']
-  }
+  // menuOptions in AppShell.vue is built from sidebarKeys.
+  const getMenuOptions = sidebarKeys
 
   describe('WelcomeCard visibility', () => {
     it('shows WelcomeCard when profiles is empty and not loading', () => {
@@ -51,7 +48,7 @@ describe('AppShell visibility logic', () => {
     })
 
     it('returns full menu when profiles exist', () => {
-      expect(getMenuOptions([{ id: 1 }])).toEqual(['search', 'papers', 'analysis'])
+      expect(getMenuOptions([{ id: 1 }])).toEqual(['search', 'papers', 'analysis', 'settings'])
     })
   })
 })

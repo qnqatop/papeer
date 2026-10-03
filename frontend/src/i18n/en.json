@@ -221,7 +221,12 @@
       "backgroundTasks": "Background tasks",
       "noTasks": "No active tasks",
       "downloadComplete": "Download complete",
-      "draftingReview": "Generating review draft..."
+      "draftingReview": "Generating review draft...",
+      "failedDownloads": "Failed downloads",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
+      "radarRuns": "Radar",
+      "radarRunLine": "{time}: {count} new"
     },
     "welcome": {
       "title": "No research profiles yet",
@@ -304,7 +309,7 @@
         "about": "About"
       },
       "searchDescription": "Search works through academic APIs and is configured individually for each research.",
-      "searchDetail": "Search runs in parallel across Semantic Scholar, OpenAlex, Crossref, and ArXiv. Results are merged, deduplicated, and scored by keyword relevance (0–10). Configure search queries and keywords on the Search page.",
+      "searchDetail": "Search runs in parallel across Semantic Scholar, OpenAlex, Crossref, and ArXiv (English axes) or CyberLeninka (Russian axes). Results are merged, deduplicated, and scored by keyword relevance (0–10). Configure search queries and keywords on the Search page.",
       "about": {
         "subtitle": "Academic Paper Exploration & Processing Assistant",
         "description": "Search across Scopus, Semantic Scholar, OpenAlex, Crossref, and ArXiv.\nAI summaries via any OpenAI-compatible LLM.\nCitation graph and approval-based recommendations.",
@@ -345,6 +350,8 @@
     "typeQueryStart": "Query start",
     "typeProviderDone": "Provider done",
     "typeProviderError": "Provider error",
+    "saveError": "{count} papers could not be saved: {error}",
+    "typeSaveError": "Save error",
     "typeQueryDone": "Query done",
     "typeAxisDone": "Axis done",
     "query": "Query:",
@@ -376,7 +383,19 @@
     "confirmTitle": "Confirm Download",
     "confirmMessage": "Download {count} approved papers to",
     "startDownload": "Start Download",
-    "noApproved": "No approved papers to download"
+    "noApproved": "No approved papers to download",
+    "failReason": {
+      "blocked": "Blocked by the publisher (captcha / anti-bot)",
+      "rateLimited": "Source rate limit — try later",
+      "invalidPdf": "Got a page instead of a PDF",
+      "noSource": "No open-access PDF found",
+      "other": "Download failed",
+      "s2RateLimited": "Semantic Scholar rate limit"
+    },
+    "s2RateLimitHint": "Semantic Scholar is rate-limiting requests — add an API key in Settings → Search",
+    "openSearchSettings": "Open settings",
+    "retryStarted": "Retrying download…",
+    "autoDownloadFailed": "Status saved, but the PDF download did not start: {error}"
   },
   "stats": {
     "title": "Statistics",
@@ -404,6 +423,13 @@
     "s2ApiKeyHint": "Optional. Avoids HTTP 403 / strict rate limits. Request a free key at https://www.semanticscholar.org/product/api#api-key-form.",
     "s2ApiKeyPlaceholder": "paste API key here",
     "s2ApiKeySaved": "Semantic Scholar API key saved",
+    "s2ApiKeyCurrent": "Saved key: {mask} (stored in the OS keychain)",
+    "s2ApiKeyReplacePlaceholder": "enter a new key to replace the saved one",
+    "s2ApiKeyClear": "Remove key",
+    "s2ApiKeyClearConfirm": "Remove the Semantic Scholar API key from the keychain?",
+    "s2ApiKeyCleared": "Semantic Scholar API key removed",
+    "s2ApiKeyFailed": "Failed to save the key: {error}",
+    "keychainUnavailable": "The OS keychain is unavailable, so the key was not saved. Unlock or set up the system keychain and try again.",
     "prompt": {
       "title": "Summary Prompt",
       "hint": "Customize the system prompt used for paper summarization.",
@@ -411,6 +437,12 @@
       "saved": "Prompt saved",
       "reset": "Reset to Default",
       "resetConfirm": "Reset prompt to default?"
+    },
+    "theme": {
+      "label": "Theme",
+      "auto": "System",
+      "light": "Light",
+      "dark": "Dark"
     }
   },
   "llm": {
@@ -703,5 +735,48 @@
       "available": "New version {version} is available",
       "action": "Update"
     }
+  },
+  "progress": {
+    "providerDone": "{provider}: {count} papers",
+    "searching": "Searching: \"{query}\"",
+    "axisDone": "Axis done: {count} papers",
+    "providerError": "{provider}: error",
+    "saveError": "{axis}: {count} papers not saved",
+    "searchComplete": "Search complete: {count} papers",
+    "searchCompleteToast": "Search complete: found {count} papers",
+    "searchError": "Error: {axis}: {error}",
+    "downloadTrying": "[{current}/{total}] Trying {source}...",
+    "downloadDone": "[{current}/{total}] Downloaded via {source}",
+    "downloadFailed": "[{current}/{total}] Failed: {error}",
+    "downloadComplete": "Download complete",
+    "downloadCompleteToast": "Download complete: {done} downloaded, {failed} failed"
+  },
+  "errors": {
+    "pdfDirNotConfigured": "PDF folder is not set for this profile — choose one in the profile settings.",
+    "noFailedDownloads": "There are no failed downloads to retry.",
+    "noDownloadedPdfs": "No downloaded papers with PDFs yet.",
+    "noPdf": "The PDF for this paper has not been downloaded yet.",
+    "pdfFileMissing": "The PDF file is missing on disk — download it again.",
+    "pdfUnavailable": "PDF storage is not ready yet. Try again in a moment.",
+    "chromeNotFound": "Chrome/Chromium was not found — install it to download from protected publishers.",
+    "noValidPapers": "None of the selected papers were found.",
+    "invalidProxy": "Invalid proxy URL. Use a form like http://host:port or socks5://host:port.",
+    "unknownSetting": "This setting cannot be changed.",
+    "updaterUnavailable": "The updater is not available in this build.",
+    "summaryBusy": "A summary for this paper and model is already being generated.",
+    "summaryExists": "A summary already exists — use Regenerate.",
+    "noLlmKey": "The active LLM profile has no API key. Add it in Settings → LLM.",
+    "noActiveLlmProfile": "No active LLM profile. Add one in Settings → LLM and make it active.",
+    "modelNotInProfile": "The selected model is not part of the active LLM profile.",
+    "noModel": "No model selected for the LLM profile.",
+    "insecureLlmUrl": "The LLM base URL must use https (plain http is allowed only for localhost).",
+    "llmKeyReentry": "The LLM base URL host changed — enter the API key again.",
+    "invalidLlmUrl": "Invalid LLM base URL.",
+    "yamlTooLarge": "The YAML file is too large.",
+    "noAxesToExport": "There are no axes to export.",
+    "blockedDestination": "The request was blocked: the address points to a local or private network.",
+    "bodyTooLarge": "The server response was too large.",
+    "timeout": "The request timed out. Check your connection or proxy and try again.",
+    "network": "Network error: the server could not be reached. Check your connection or proxy."
   }
 }

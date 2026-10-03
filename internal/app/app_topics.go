@@ -32,39 +32,6 @@ func (a *App) GetTopics(profileID int64, k int) ([]topics.Topic, error) {
 	return topics.Cluster(docs, k)
 }
 
-// GetTopicsForReview clusters the profile's approved/downloaded papers into
-// topics using summary text (when available) instead of title+abstract for
-// finer clustering. Falls back to title+abstract when no summary exists.
-func (a *App) GetTopicsForReview(profileID int64, model string, k int) ([]topics.Topic, error) {
-	papers, err := a.approvedAndDownloadedFull(profileID)
-	if err != nil {
-		return nil, err
-	}
-
-	pids := make([]int64, len(papers))
-	for i, p := range papers {
-		pids[i] = p.ID
-	}
-	summariesByPaper, _ := a.db.GetSummariesByPaperIDs(pids, model)
-
-	docs := make([]topics.Document, 0, len(papers))
-	for _, p := range papers {
-		text := strings.TrimSpace(p.Title + " " + p.Abstract)
-		if sum, ok := summariesByPaper[p.ID]; ok && strings.TrimSpace(sum) != "" {
-			text = strings.TrimSpace(p.Title + " " + sum)
-		}
-		if text == "" {
-			continue
-		}
-		docs = append(docs, topics.Document{ID: p.ID, Text: text})
-	}
-	if len(docs) == 0 {
-		return nil, nil
-	}
-
-	return topics.Cluster(docs, k)
-}
-
 // approvedAndDownloadedFull returns full paper records (including abstract,
 // venue, etc.) for status IN (approved, downloaded) — the same eligibility
 // set as FetchCitations, but via ListPapers so all columns are populated

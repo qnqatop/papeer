@@ -17,12 +17,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { NAlert, NButton } from 'naive-ui'
 import { PendingUpdate, SaveSetting } from '../../../wailsjs/go/app/App'
-import { EventsOn } from '../../../wailsjs/runtime/runtime'
+import { useWailsEvent } from '../../composables/useWailsEvent'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -30,16 +30,15 @@ const router = useRouter()
 const visible = ref(false)
 const version = ref('')
 
-let unlisten: (() => void) | null = null
-
 function show(info: { latestVersion?: string } | null) {
   if (!info || !info.latestVersion) return
   version.value = info.latestVersion
   visible.value = true
 }
 
+useWailsEvent('update:available', (info: any) => show(info))
+
 onMounted(async () => {
-  unlisten = EventsOn('update:available', (info: any) => show(info))
   // Backfill in case the startup event fired before the listener was bound.
   try {
     const pending = await PendingUpdate()
@@ -48,8 +47,6 @@ onMounted(async () => {
     /* no pending update */
   }
 })
-
-onUnmounted(() => unlisten?.())
 
 function goUpdate() {
   visible.value = false

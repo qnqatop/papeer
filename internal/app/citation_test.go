@@ -300,36 +300,6 @@ func TestGetCitationGraph_FiltersExternalsByMinMentions(t *testing.T) {
 	}
 }
 
-// ─── GetMissingKeyPapers ─────────────────────────────────────────────────
-
-func TestGetMissingKeyPapers_DefaultsLimit(t *testing.T) {
-	a := newTestApp(t)
-	prof := createValidProfile(t, a, "P", "real@univ.edu")
-
-	// Insert externals with varying mention counts.
-	for i := 0; i < 5; i++ {
-		a.db.UpsertExternalCitation(prof.ID, &db.ExternalCitation{
-			S2PaperID: fmt.Sprintf("ext%d", i), Title: fmt.Sprintf("E%d", i),
-		})
-		// Bump high-mention ones twice.
-		if i < 3 {
-			a.db.UpsertExternalCitation(prof.ID, &db.ExternalCitation{
-				S2PaperID: fmt.Sprintf("ext%d", i), Title: fmt.Sprintf("E%d", i),
-			})
-		}
-	}
-
-	// Default limit when 0.
-	got, err := a.GetMissingKeyPapers(prof.ID, 0)
-	if err != nil {
-		t.Fatalf("GetMissingKeyPapers: %v", err)
-	}
-	// Only those with mention_count ≥ 2 returned. Only the first 3 qualify.
-	if len(got) != 3 {
-		t.Errorf("len(got) = %d, want 3", len(got))
-	}
-}
-
 // ─── ClearCitationData ───────────────────────────────────────────────────
 
 func TestClearCitationData(t *testing.T) {

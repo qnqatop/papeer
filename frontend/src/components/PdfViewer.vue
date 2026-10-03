@@ -103,6 +103,7 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, onMounted, nextTick, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { localizeBackendError } from '../utils/errors'
 import {
   NSpin, NText, NSpace, NButton, NIcon, NDivider,
   NInput, NProgress, NSelect,
@@ -117,8 +118,6 @@ import {
 // and older WebView2; the legacy build ships core-js polyfills instead.
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url'
-
-import { GetPaperPDFData } from '../../wailsjs/go/app/App'
 
 // Set worker before any pdf.js calls
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
@@ -256,21 +255,12 @@ async function loadPDF() {
   loadProgress.value = 0
 
   try {
-    // 1. Получаем файл напрямую через IPC-мост Wails
-    const b64Data = await GetPaperPDFData(props.paperId)
-
-    // 2. Быстро конвертируем Base64 в Uint8Array
-    const binaryString = window.atob(b64Data)
-    const len = binaryString.length
-    const bytes = new Uint8Array(len)
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryString.charCodeAt(i)
-    }
-
-    // 3. Скармливаем бинарные данные в pdf.js. CMaps/шрифты/wasm отдаются
-    // с нашего origin (см. pdfjsAssets в vite.config.ts) — работает офлайн.
+    // Stream the file from the asset server's /api/pdf/{id} route (HTTP
+    // Range, so large PDFs load incrementally instead of crossing the IPC
+    // bridge as Base64). CMaps/fonts/wasm come from our own origin too (see
+    // pdfjsAssets in vite.config.ts), so the viewer works offline.
     const loadingTask = pdfjsLib.getDocument({
-      data: bytes,
+      url: `/api/pdf/${props.paperId}`,
       cMapUrl: pdfjsAssetUrl('cmaps'),
       cMapPacked: true,
       standardFontDataUrl: pdfjsAssetUrl('standard_fonts'),
@@ -319,10 +309,10 @@ async function loadPDF() {
       error.value = t('papers.pdfPassword')
     } else if (msg.includes('Invalid PDF') || msg.includes('corrupt')) {
       error.value = t('papers.pdfCorrupted')
-    } else if (msg.includes('404') || msg.includes('not found') || msg.includes('Not Found') || msg.includes('no successful download')) {
+    } else if (e?.status === 404 || msg.includes('Missing PDF') || msg.includes('404') || msg.includes('not found') || msg.includes('Not Found') || msg.includes('no successful download')) {
       error.value = t('papers.pdfNotFound')
     } else {
-      error.value = t('papers.pdfError', { error: msg })
+      error.value = t('papers.pdfError', { error: localizeBackendError(e, t) })
     }
   }
 }
@@ -435,13 +425,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--color-neutral-700, #334155);
+  background: var(--surface-backdrop);
 }
 
 .pdf-viewer--fullscreen {
   width: 100vw;
   height: 100vh;
-  background: var(--color-neutral-800, #1e293b);
+  background: var(--surface-backdrop-deep);
 }
 
 .pdf-toolbar {

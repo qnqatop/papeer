@@ -74,6 +74,15 @@
               />
             </div>
             <div>
+              <n-text strong>{{ t('settings.theme.label') }}</n-text>
+              <n-select
+                :value="themePreference"
+                :options="themeOptions"
+                style="max-width: 200px; margin-top: 4px"
+                @update:value="setThemePreference"
+              />
+            </div>
+            <div>
               <n-text strong>{{ t('settings.onboarding') }}</n-text>
               <div style="margin-top: 4px">
                 <n-button @click="restartTour">
@@ -188,6 +197,44 @@
               {{ t('v2.settings.searchDetail') }}
             </n-text>
           </n-space>
+
+          <n-divider style="margin: 16px 0" />
+
+          <n-text strong style="font-size: 13px; display: block; margin-bottom: 4px">{{ t('settings.s2ApiKey') }}</n-text>
+          <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 8px">{{ t('settings.s2ApiKeyHint') }}</n-text>
+          <n-text v-if="s2KeyStatus.set" depth="2" style="font-size: 12px; display: block; margin-bottom: 8px">
+            {{ t('settings.s2ApiKeyCurrent', { mask: s2KeyStatus.masked }) }}
+          </n-text>
+          <n-space :size="8" align="center">
+            <n-input
+              v-model:value="s2ApiKey"
+              type="password"
+              show-password-on="click"
+              :placeholder="s2KeyStatus.set ? t('settings.s2ApiKeyReplacePlaceholder') : t('settings.s2ApiKeyPlaceholder')"
+              style="width: 360px"
+              @keydown.enter="saveS2ApiKey"
+            />
+            <n-button :loading="savingS2Key" :disabled="!s2ApiKey.trim()" @click="saveS2ApiKey">{{ t('common.save') }}</n-button>
+            <n-popconfirm v-if="s2KeyStatus.set" @positive-click="clearS2ApiKey">
+              <template #trigger>
+                <n-button :disabled="savingS2Key">{{ t('settings.s2ApiKeyClear') }}</n-button>
+              </template>
+              {{ t('settings.s2ApiKeyClearConfirm') }}
+            </n-popconfirm>
+          </n-space>
+
+          <n-divider style="margin: 16px 0" />
+
+          <n-text depth="3" style="font-size: 13px; display: block; margin-bottom: 8px">{{ t('settings.checkProvidersHint') }}</n-text>
+          <n-button :loading="checkingProviders" @click="checkProviders">{{ t('settings.checkProviders') }}</n-button>
+          <div v-if="providerStatus.length > 0" style="margin-top: 12px; display: flex; flex-direction: column; gap: 4px">
+            <div v-for="s in providerStatus" :key="s.name" style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-family: var(--font-mono, monospace)">
+              <span :style="{ color: s.ok ? '#10b981' : '#ef4444' }">{{ s.ok ? '✓' : '✗' }}</span>
+              <span style="min-width: 120px">{{ s.name }}</span>
+              <span v-if="s.ok" style="color: var(--text-tertiary)">{{ s.latency_ms }} ms</span>
+              <span v-else style="color: #ef4444; font-size: 11px">{{ s.error }}</span>
+            </div>
+          </div>
         </template>
 
         <!-- Monitoring -->
@@ -256,33 +303,6 @@
             <n-input v-model:value="proxyURL" :placeholder="t('settings.proxyPlaceholder')" style="width: 360px" @blur="saveProxy" @keydown.enter="saveProxy" />
             <n-button :loading="testingProxy" :disabled="!proxyURL" @click="testProxy">{{ t('settings.testProxy') }}</n-button>
           </n-space>
-
-          <n-divider style="margin: 16px 0" />
-
-          <n-text strong style="font-size: 13px; display: block; margin-bottom: 4px">{{ t('settings.s2ApiKey') }}</n-text>
-          <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 8px">{{ t('settings.s2ApiKeyHint') }}</n-text>
-          <n-input
-            v-model:value="s2ApiKey"
-            type="password"
-            show-password-on="click"
-            :placeholder="t('settings.s2ApiKeyPlaceholder')"
-            style="width: 360px"
-            @blur="saveS2ApiKey"
-            @keydown.enter="saveS2ApiKey"
-          />
-
-          <n-divider style="margin: 16px 0" />
-
-          <n-text depth="3" style="font-size: 13px; display: block; margin-bottom: 8px">{{ t('settings.checkProvidersHint') }}</n-text>
-          <n-button :loading="checkingProviders" @click="checkProviders">{{ t('settings.checkProviders') }}</n-button>
-          <div v-if="providerStatus.length > 0" style="margin-top: 12px; display: flex; flex-direction: column; gap: 4px">
-            <div v-for="s in providerStatus" :key="s.name" style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-family: var(--font-mono, monospace)">
-              <span :style="{ color: s.ok ? '#10b981' : '#ef4444' }">{{ s.ok ? '✓' : '✗' }}</span>
-              <span style="min-width: 120px">{{ s.name }}</span>
-              <span v-if="s.ok" style="color: var(--text-tertiary)">{{ s.latency_ms }} ms</span>
-              <span v-else style="color: #ef4444; font-size: 11px">{{ s.error }}</span>
-            </div>
-          </div>
         </template>
 
         <!-- About -->
@@ -375,7 +395,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   NCard, NSpace, NButton, NIcon, NSelect, NText, NInput,
@@ -390,12 +410,13 @@ import { useProfileStore } from '../stores/profile'
 import { useProgressStore } from '../stores/progress'
 import { useLLMProfilesStore } from '../stores/llmProfiles'
 import { setLocale, getLocale } from '../i18n'
-import { isInvalidEmailError } from '../utils/errors'
+import { isInvalidEmailError, localizeBackendError } from '../utils/errors'
+import { themePreference, setThemePreference } from '../theme/mode'
 import {
   GetSettings, SaveSetting, TestProxy,
   ListTags, CreateTag as CreateTagAPI, DeleteTag as DeleteTagAPI,
   RunRadar, DeleteProfile as DeleteProfileAPI, AppVersion,
-  CheckSearchProviders,
+  CheckSearchProviders, SetSemanticScholarKey, GetSemanticScholarKeyStatus,
 } from '../../wailsjs/go/app/App'
 import { app, db } from '../../wailsjs/go/models'
 import ProfileFormModal from '../components/ProfileFormModal.vue'
@@ -404,6 +425,7 @@ import { useUpdater } from '../composables/useUpdater'
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const onboardingStore = useOnboardingStore()
 const profileStore = useProfileStore()
 const progressStore = useProgressStore()
@@ -441,7 +463,7 @@ async function deleteProfile(p: db.Profile) {
     await profileStore.fetchProfiles()
     message.success(t('profiles.deleted'))
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -461,6 +483,12 @@ const localeOptions = computed(() => [
   { label: t('lang.ru'), value: 'ru' },
 ])
 
+const themeOptions = computed(() => [
+  { label: t('settings.theme.auto'), value: 'auto' },
+  { label: t('settings.theme.light'), value: 'light' },
+  { label: t('settings.theme.dark'), value: 'dark' },
+])
+
 function switchLocale(value: string) {
   setLocale(value)
   currentLocale.value = value
@@ -476,25 +504,56 @@ const proxyURL = ref('')
 const testingProxy = ref(false)
 
 // --- Semantic Scholar API key ---
+// The key lives in the OS keychain; the backend only ever returns its mask,
+// so the input is write-only (enter a new key to replace the stored one).
 const s2ApiKey = ref('')
+const s2KeyStatus = ref<{ set: boolean; masked: string }>({ set: false, masked: '' })
+const savingS2Key = ref(false)
+
+async function loadS2KeyStatus() {
+  try {
+    s2KeyStatus.value = await GetSemanticScholarKeyStatus()
+  } catch { /* ignore */ }
+}
 
 async function loadSettings() {
   try {
     const settings = await GetSettings()
     proxyURL.value = settings['proxy_url'] || ''
-    s2ApiKey.value = settings['semantic_scholar_api_key'] || ''
     // Absent = enabled by default.
     autoUpdateCheck.value = settings['auto_update_check'] !== 'false'
   } catch { /* ignore */ }
+  await loadS2KeyStatus()
 }
 
 async function saveS2ApiKey() {
+  const key = s2ApiKey.value.trim()
+  if (!key) return
+  savingS2Key.value = true
   try {
-    await SaveSetting('semantic_scholar_api_key', s2ApiKey.value.trim())
-    if (s2ApiKey.value.trim()) {
-      message.success(t('settings.s2ApiKeySaved'))
-    }
-  } catch { /* ignore */ }
+    await SetSemanticScholarKey(key)
+    s2ApiKey.value = ''
+    message.success(t('settings.s2ApiKeySaved'))
+  } catch (e: any) {
+    message.error(t('settings.s2ApiKeyFailed', { error: localizeBackendError(e, t) }))
+  } finally {
+    savingS2Key.value = false
+    await loadS2KeyStatus()
+  }
+}
+
+async function clearS2ApiKey() {
+  savingS2Key.value = true
+  try {
+    await SetSemanticScholarKey('')
+    s2ApiKey.value = ''
+    message.success(t('settings.s2ApiKeyCleared'))
+  } catch (e: any) {
+    message.error(t('settings.s2ApiKeyFailed', { error: localizeBackendError(e, t) }))
+  } finally {
+    savingS2Key.value = false
+    await loadS2KeyStatus()
+  }
 }
 
 async function saveProxy() {
@@ -512,7 +571,7 @@ async function testProxy() {
     await TestProxy(proxyURL.value.trim())
     message.success(t('settings.proxyOk'))
   } catch (e: any) {
-    message.error(t('settings.proxyFailed', { error: e }))
+    message.error(t('settings.proxyFailed', { error: localizeBackendError(e, t) }))
   } finally {
     testingProxy.value = false
   }
@@ -535,7 +594,7 @@ async function checkProviders() {
       message.warning(t('settings.checkProvidersPartial', { ok: okCount, total }))
     }
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   } finally {
     checkingProviders.value = false
   }
@@ -568,7 +627,7 @@ async function createTag() {
     message.success(t('tags.created'))
     await fetchTags()
   } catch (e: any) {
-    message.error(t('tags.createFailed', { error: e }))
+    message.error(t('tags.createFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -578,7 +637,7 @@ async function deleteTag(tag: db.Tag) {
     message.success(t('tags.deleted'))
     await fetchTags()
   } catch (e: any) {
-    message.error(t('tags.deleteFailed', { error: e }))
+    message.error(t('tags.deleteFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -630,7 +689,7 @@ async function runRadarNow() {
     else { message.info(t('monitoring.foundNone')) }
   } catch (e: any) {
     if (isInvalidEmailError(e)) message.error(t('profiles.emailMissingForOps'))
-    else message.error(t('papers.failed', { error: e }))
+    else message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
     progressStore.radarRunning = false
   }
 }
@@ -659,7 +718,7 @@ async function setActiveProfile(p: app.LLMProfileView) {
     await llmStore.setActive(p.id)
     message.success(t('llm.activated', { name: p.name }))
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   }
 }
 
@@ -668,7 +727,7 @@ async function deleteLLMProfile(p: app.LLMProfileView) {
     await llmStore.remove(p.id)
     message.success(t('llm.deleted'))
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   }
 }
 
@@ -678,7 +737,7 @@ async function testProfile(p: app.LLMProfileView) {
     await llmStore.test(p.id)
     message.success(t('llm.testOk'))
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   } finally {
     testingId.value = null
   }
@@ -748,7 +807,7 @@ async function checkUpdates() {
       message.success(t('updates.upToDate'))
     }
   } catch (e: any) {
-    updateError.value = t('updates.checkFailed', { error: e?.message || String(e) })
+    updateError.value = t('updates.checkFailed', { error: localizeBackendError(e, t) })
   }
 }
 
@@ -756,13 +815,13 @@ async function downloadUpdate() {
   try {
     await runDownloadUpdate()
   } catch (e: any) {
-    updateError.value = t('updates.downloadFailed', { error: e?.message || String(e) })
+    updateError.value = t('updates.downloadFailed', { error: localizeBackendError(e, t) })
   }
 }
 
 function installUpdate() {
   runInstallUpdate().catch((e: any) => {
-    updateError.value = t('updates.installFailed', { error: e?.message || String(e) })
+    updateError.value = t('updates.installFailed', { error: localizeBackendError(e, t) })
   })
 }
 
@@ -792,6 +851,17 @@ onMounted(() => {
 })
 
 watch(() => profileStore.activeProfileId, () => { fetchTags() })
+
+// ?section=<key> opens that section (e.g. the S2 rate-limit hint links to
+// ?section=search). Watched, not just read on mount, because the link can be
+// followed while Settings is already open. The query is dropped once applied
+// so following the same link again after switching sections still works.
+watch(() => route.query.section, (section) => {
+  if (typeof section !== 'string') return
+  if (sectionOptions.value.some((o) => o.key === section)) activeSection.value = section
+  const { section: _applied, ...rest } = route.query
+  router.replace({ query: rest, hash: route.hash })
+}, { immediate: true })
 </script>
 
 <style scoped>

@@ -74,6 +74,122 @@ func TestStopRadar_BeforeStartPreventsStart(t *testing.T) {
 	}
 }
 
+// radarState returns the current scheduler stop channel (nil when no
+// scheduler is registered).
+func radarState(a *App) chan struct{} {
+	a.radarMu.Lock()
+	defer a.radarMu.Unlock()
+	return a.radarStop
+}
+
+func isClosed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+func TestRestartRadar_FollowsSettings(t *testing.T) {
+	a := newTestApp(t)
+	t.Cleanup(a.stopRadar)
+
+	// Enabled but one-shot ("startup"): no periodic scheduler.
+	if err := a.SaveSetting("enable_radar", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if ch := radarState(a); ch != nil {
+		t.Fatal("startup-only frequency must not start a periodic scheduler")
+	}
+
+	// Periodic frequency starts a scheduler.
+	if err := a.SaveSetting("radar_frequency", "6h"); err != nil {
+		t.Fatal(err)
+	}
+	first := radarState(a)
+	if first == nil {
+		t.Fatal("periodic frequency did not start the scheduler")
+	}
+
+	// Changing the frequency replaces it.
+	if err := a.SaveSetting("radar_frequency", "12h"); err != nil {
+		t.Fatal(err)
+	}
+	second := radarState(a)
+	if second == nil || second == first {
+		t.Fatal("frequency change did not restart the scheduler")
+	}
+	if !isClosed(first) {
+		t.Error("previous scheduler was not stopped")
+	}
+
+	// Disabling stops it.
+	if err := a.SaveSetting("enable_radar", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if radarState(a) != nil || !isClosed(second) {
+		t.Error("disabling the radar did not stop the scheduler")
+	}
+}
+
+func TestRestartRadar_ReplacesStartupScheduler(t *testing.T) {
+	old := radarStartDelay
+	radarStartDelay = time.Hour // keep the startup goroutine in its delay
+	t.Cleanup(func() { radarStartDelay = old })
+
+	a := newTestApp(t)
+	t.Cleanup(a.stopRadar)
+	_ = a.db.SetSetting("enable_radar", "true")
+	_ = a.db.SetSetting("radar_frequency", "3h")
+
+	exited := make(chan struct{})
+	go func() {
+		a.startRadarIfEnabled()
+		close(exited)
+	}()
+	var startup chan struct{}
+	for i := 0; i < 100 && startup == nil; i++ {
+		time.Sleep(10 * time.Millisecond)
+		startup = radarState(a)
+	}
+	if startup == nil {
+		t.Fatal("startup scheduler never registered")
+	}
+
+	if err := a.SaveSetting("radar_frequency", "24h"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup scheduler kept running after restartRadar")
+	}
+	if ch := radarState(a); ch == nil || ch == startup {
+		t.Error("restartRadar did not install a new scheduler")
+	}
+}
+
+func TestRestartRadar_NoopAfterStop(t *testing.T) {
+	a := newTestApp(t)
+	_ = a.db.SetSetting("enable_radar", "true")
+	a.stopRadar()
+
+	done := make(chan struct{})
+	go func() {
+		_ = a.SaveSetting("radar_frequency", "3h")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SaveSetting blocked after stopRadar")
+	}
+	if radarState(a) != nil {
+		t.Error("radar restarted after shutdown")
+	}
+}
+
 func TestRadarLoop_StopsOnClose(t *testing.T) {
 	stop := make(chan struct{})
 	var mu sync.Mutex

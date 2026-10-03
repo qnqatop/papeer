@@ -1,5 +1,5 @@
 <template>
-  <n-popover trigger="click" placement="bottom-end" :width="360">
+  <n-popover v-model:show="showPopover" trigger="click" placement="bottom-end" :width="360">
     <template #trigger>
       <n-badge :value="activeCount" :show="activeCount > 0" :offset="[-4, 4]">
         <n-button quaternary circle size="small">
@@ -13,7 +13,7 @@
     <n-space vertical :size="8">
       <n-text strong style="font-size: 14px">{{ t('v2.header.backgroundTasks') }}</n-text>
 
-      <template v-if="activeCount === 0 && !hasDownloadLog">
+      <template v-if="activeCount === 0 && !hasDownloadLog && !hasHistory">
         <n-text depth="3" style="font-size: 13px">{{ t('v2.header.noTasks') }}</n-text>
       </template>
 
@@ -59,7 +59,7 @@
             style="margin-top: 4px"
           />
           <!-- Per-paper download log with per-source attempt chips. -->
-          <download-log max-height="240px" style="margin-top: 6px" />
+          <download-log max-height="240px" style="margin-top: 6px" @navigate="showPopover = false" />
         </div>
 
         <!-- Review draft -->
@@ -90,24 +90,101 @@
             <n-text style="font-size: 13px">{{ t('monitoring.running') }}</n-text>
           </n-space>
         </div>
+
+        <!-- Failed downloads: survive the per-run log reset until retried
+             successfully or dismissed. -->
+        <div v-if="progressStore.failedDownloads.length > 0" class="task-section">
+          <n-text style="font-size: 13px">
+            {{ t('v2.header.failedDownloads') }} ({{ progressStore.failedDownloads.length }})
+          </n-text>
+          <s2-rate-limit-hint v-if="anyS2RateLimited" @navigate="showPopover = false" />
+          <div class="failed-list">
+            <div v-for="f in progressStore.failedDownloads" :key="f.paper_id" class="failed-row">
+              <div class="failed-text">
+                <n-ellipsis :line-clamp="1" style="font-size: 12px">{{ f.title || `#${f.paper_id}` }}</n-ellipsis>
+                <n-text depth="3" style="font-size: 11px; display: block" :title="f.error">
+                  {{ downloadFailReason(f.error, t) }}
+                </n-text>
+              </div>
+              <n-button size="tiny" secondary :loading="retrying.has(f.paper_id)" @click="retry(f.paper_id)">
+                {{ t('v2.header.retry') }}
+              </n-button>
+              <n-button size="tiny" quaternary :title="t('v2.header.dismiss')" @click="progressStore.dismissFailedDownload(f.paper_id)">
+                ×
+              </n-button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent radar runs (this session) -->
+        <div v-if="progressStore.radarRuns.length > 0" class="task-section">
+          <n-text style="font-size: 13px">{{ t('v2.header.radarRuns') }}</n-text>
+          <n-text
+            v-for="r in progressStore.radarRuns"
+            :key="r.at"
+            depth="3"
+            style="font-size: 12px; display: block"
+          >
+            {{ t('v2.header.radarRunLine', { time: formatTime(r.at), count: r.new_papers }) }}
+          </n-text>
+        </div>
       </template>
     </n-space>
   </n-popover>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  NBadge, NButton, NIcon, NPopover, NProgress,
-  NSpace, NSpin, NText,
+  NBadge, NButton, NEllipsis, NIcon, NPopover, NProgress,
+  NSpace, NSpin, NText, useMessage,
 } from 'naive-ui'
 import { SyncOutline } from '@vicons/ionicons5'
 import { useProgressStore } from '../../stores/progress'
 import DownloadLog from '../DownloadLog.vue'
+import S2RateLimitHint from '../S2RateLimitHint.vue'
+import { DownloadPaper } from '../../../wailsjs/go/app/App'
+import { downloadFailReason, isS2RateLimited, localizeBackendError } from '../../utils/errors'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const progressStore = useProgressStore()
+const message = useMessage()
+
+const showPopover = ref(false)
+
+// One hint for the whole failed list: the fix (an S2 API key) is global.
+const anyS2RateLimited = computed(() =>
+  progressStore.failedDownloads.some((f) => isS2RateLimited(f.error)),
+)
+
+const hasHistory = computed(() =>
+  progressStore.failedDownloads.length > 0 || progressStore.radarRuns.length > 0,
+)
+
+// Paper ids whose retry RPC is in flight.
+const retrying = ref(new Set<number>())
+
+async function retry(paperId: number) {
+  retrying.value = new Set(retrying.value).add(paperId)
+  try {
+    await DownloadPaper(paperId)
+    // The download is running now; its progress shows above, and a new
+    // failure brings the row back.
+    progressStore.dismissFailedDownload(paperId)
+    message.info(t('download.retryStarted'))
+  } catch (e) {
+    message.error(localizeBackendError(e, t))
+  } finally {
+    const next = new Set(retrying.value)
+    next.delete(paperId)
+    retrying.value = next
+  }
+}
+
+function formatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString(locale.value, { hour: '2-digit', minute: '2-digit' })
+}
 
 const activeCount = computed(() => {
   let count = 0
@@ -139,6 +216,25 @@ const reviewPercent = computed(() => {
 </script>
 
 <style scoped>
+.task-section {
+  padding: 8px 0;
+  border-top: 1px solid var(--surface-divider);
+}
+.failed-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.failed-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 0;
+}
+.failed-text {
+  flex: 1;
+  min-width: 0;
+}
 .spinning {
   animation: spin 1.2s linear infinite;
 }

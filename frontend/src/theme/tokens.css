@@ -80,6 +80,10 @@
   --surface-overlay:  rgba(0, 0, 0, 0.6);
   --surface-border:   rgba(148, 163, 184, 0.12);
   --surface-divider:  rgba(148, 163, 184, 0.08);
+  --surface-hover:    rgba(255, 255, 255, 0.03);
+  --surface-glass:    rgba(15, 23, 42, 0.95);
+  --surface-backdrop: var(--color-neutral-700);   /* behind PDF pages */
+  --surface-backdrop-deep: var(--color-neutral-800);
 
   /* ── Text ── */
   --text-primary:     var(--color-neutral-50);
@@ -141,4 +145,32 @@
   --transition-fast:   150ms ease;
   --transition-normal: 250ms ease;
   --transition-slow:   350ms ease;
+}
+
+/*
+ * Light theme: overrides only surfaces, text and shadows. Set by App.vue as
+ * <html data-theme="light">; the brand palette and scales stay the same.
+ */
+:root[data-theme="light"] {
+  --surface-bg:       var(--color-neutral-50);
+  --surface-card:     #ffffff;
+  --surface-elevated: var(--color-neutral-100);
+  --surface-overlay:  rgba(15, 23, 42, 0.4);
+  --surface-border:   rgba(15, 23, 42, 0.12);
+  --surface-divider:  rgba(15, 23, 42, 0.08);
+  --surface-hover:    rgba(15, 23, 42, 0.03);
+  --surface-glass:    rgba(255, 255, 255, 0.95);
+  --surface-backdrop: var(--color-neutral-300);
+  --surface-backdrop-deep: var(--color-neutral-400);
+
+  --text-primary:     var(--color-neutral-900);
+  --text-secondary:   var(--color-neutral-700);
+  --text-tertiary:    var(--color-neutral-500);
+  --text-disabled:    var(--color-neutral-400);
+  --text-link:        var(--color-primary-600);
+
+  --shadow-sm:  0 1px 2px rgba(15, 23, 42, 0.08);
+  --shadow-md:  0 2px 8px rgba(15, 23, 42, 0.08);
+  --shadow-lg:  0 4px 16px rgba(15, 23, 42, 0.12);
+  --shadow-xl:  0 8px 32px rgba(15, 23, 42, 0.16);
 }

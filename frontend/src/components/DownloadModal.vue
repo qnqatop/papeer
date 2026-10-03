@@ -65,7 +65,7 @@
     </n-alert>
 
     <!-- Per-paper log (shared with the header BackgroundTasksIndicator popover). -->
-    <download-log />
+    <download-log @navigate="visible = false" />
 
     <!-- Confirm sub-dialog -->
     <n-modal v-model:show="showConfirm" preset="dialog" :title="t('download.confirmTitle')" :positive-text="t('download.startDownload')" :negative-text="t('common.cancel')" @positive-click="doDownload">
@@ -88,7 +88,7 @@ import { useProfileStore } from '../stores/profile'
 import { useProgressStore } from '../stores/progress'
 import { DownloadApproved, CancelOperation, ListPapers, ExportFailedDownloads, SaveExportFile } from '../../wailsjs/go/app/App'
 import { db } from '../../wailsjs/go/models'
-import { isInvalidEmailError } from '../utils/errors'
+import { isInvalidEmailError, localizeBackendError } from '../utils/errors'
 import DownloadLog from './DownloadLog.vue'
 
 const { t } = useI18n()
@@ -114,7 +114,7 @@ async function exportFailed() {
     }
     await SaveExportFile('failed_downloads.txt', content)
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   } finally {
     exportingFailed.value = false
   }
@@ -158,7 +158,7 @@ async function doDownload() {
   } catch (e: any) {
     progressStore.downloading = false
     if (isInvalidEmailError(e)) message.error(t('profiles.emailMissingForOps'))
-    else message.error(e?.message || String(e))
+    else message.error(localizeBackendError(e, t))
   }
 }
 

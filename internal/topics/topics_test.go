@@ -1,56 +1,83 @@
 package topics
 
 import (
+	"maps"
 	"math"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ─── tokenize ─────────────────────────────────────────────────────────────
 
 func TestTokenize_FiltersStopwordsAndShortTokens(t *testing.T) {
-	toks := tokenize("The Novel Approach to Quantum Entanglement is a Study")
-	for _, bad := range []string{"the", "novel", "approach", "to", "is", "a", "study"} {
-		for _, tok := range toks {
-			if tok == bad {
-				t.Errorf("tokenize() kept stopword/boilerplate %q in %v", bad, toks)
-			}
-		}
-	}
-	found := false
-	for _, tok := range toks {
-		if tok == "quantum" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("tokenize() dropped meaningful word %q from %v", "quantum", toks)
+	// Stopwords ("the", "to", "is", "a") and academic boilerplate ("novel",
+	// "approach", "study") are dropped; the remaining words are stemmed and
+	// joined into a bigram.
+	toks := tokenize("The Novel Approach to Quantum Entanglement is a Study", nil)
+	want := []string{"quantum", "entangl", "quantum entangl"}
+	if !slices.Equal(toks, want) {
+		t.Errorf("tokenize() = %v, want %v", toks, want)
 	}
 }
 
 func TestTokenize_DropsShortWords(t *testing.T) {
-	toks := tokenize("an ai ML in NLP")
+	// Short words are measured in runes: two-letter Cyrillic words are four
+	// bytes and used to slip through a byte-length check.
+	toks := tokenize("an ai ML in NLP ил ок кпд", nil)
 	for _, tok := range toks {
-		if len(tok) < 3 && tok != "" {
-			// bigrams contain a space so length isn't a clean unigram check;
-			// only unigrams (no space) must be >= 3 runes.
-			t.Errorf("tokenize() kept a short unigram %q", tok)
+		for _, w := range strings.Fields(tok) {
+			if utf8.RuneCountInString(w) < 3 {
+				t.Errorf("tokenize() kept a short word %q in %v", w, toks)
+			}
 		}
+	}
+	if !slices.Contains(toks, "nlp") || !slices.Contains(toks, "кпд") {
+		t.Errorf("tokenize() dropped a 3-letter word: %v", toks)
 	}
 }
 
 func TestTokenize_EmitsBigrams(t *testing.T) {
-	toks := tokenize("attention mechanism transformer network")
-	wantBigram := "attention mechanism"
-	found := false
-	for _, tok := range toks {
-		if tok == wantBigram {
-			found = true
-		}
+	surfaces := make(surfaceIndex)
+	toks := tokenize("attention mechanism transformer network", surfaces)
+	wantBigram := "attent mechan" // stems of "attention mechanism"
+	if !slices.Contains(toks, wantBigram) {
+		t.Fatalf("tokenize() missing bigram %q in %v", wantBigram, toks)
 	}
-	if !found {
-		t.Errorf("tokenize() missing bigram %q in %v", wantBigram, toks)
+	if got := surfaces.display(wantBigram); got != "attention mechanism" {
+		t.Errorf("display(%q) = %q, want the surface phrase", wantBigram, got)
 	}
+}
+
+func TestTokenize_InflectionsShareTerm(t *testing.T) {
+	a := tokenize("нейронные сети", nil)
+	b := tokenize("нейронных сетей", nil)
+	if !slices.Equal(a, b) || len(a) != 3 {
+		t.Errorf("inflected forms tokenize differently: %v vs %v", a, b)
+	}
+}
+
+func TestSurfaceIndex_MostFrequentThenLexicographic(t *testing.T) {
+	s := make(surfaceIndex)
+	s.add("сет", "сетей")
+	s.add("сет", "сети")
+	s.add("сет", "сети")
+	s.add("сет", "сеть")
+	if got := s.display("сет"); got != "сети" {
+		t.Errorf("display = %q, want most frequent form", got)
+	}
+	s.add("нейрон", "нейронных")
+	s.add("нейрон", "нейронные")
+	if got := s.display("нейрон"); got != "нейронные" {
+		t.Errorf("display on tie = %q, want lexicographically smallest", got)
+	}
+	if got := s.display("unknown"); got != "unknown" {
+		t.Errorf("display(unknown) = %q, want term unchanged", got)
+	}
+	var nilIndex surfaceIndex
+	nilIndex.add("x", "y") // must not panic
 }
 
 // ─── buildVocab ───────────────────────────────────────────────────────────
@@ -288,6 +315,73 @@ func TestCluster_SingleClusterLayoutIsOrigin(t *testing.T) {
 	}
 	if got[0].X != 0 || got[0].Y != 0 {
 		t.Errorf("single-cluster layout = (%v,%v), want (0,0)", got[0].X, got[0].Y)
+	}
+}
+
+// russianDocs are two groups of Russian abstracts in which the key phrase
+// of each group appears in a different inflection in every document. Without
+// stemming each inflected form has document frequency 1 and is dropped from
+// the vocabulary; with stemming they collapse into one term per group.
+func russianDocs() []Document {
+	texts := []string{
+		"Нейронные сети для распознавания речи: нейронные сети глубокого обучения",
+		"Обучение нейронных сетей распознаванию речи в шумной обстановке",
+		"Распознавание речи нейронной сетью с механизмом внимания",
+		"Донные осадки озера Байкал: геохимия и донные осадки прибрежной зоны",
+		"Геохимия донных осадков озера и тяжёлые металлы",
+		"Тяжелые металлы в донных осадках пресноводных озёр",
+	}
+	docs := make([]Document, len(texts))
+	for i, text := range texts {
+		docs[i] = Document{ID: int64(i + 1), Text: text}
+	}
+	return docs
+}
+
+func TestCluster_RussianInflectionsCollapseIntoReadableLabels(t *testing.T) {
+	docs := russianDocs()
+	got, err := Cluster(docs, 2)
+	if err != nil {
+		t.Fatalf("Cluster: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(topics) = %d, want 2", len(got))
+	}
+
+	// Every displayed word must be a real word of the corpus, never a stem.
+	corpusWords := make(map[string]bool)
+	for _, d := range docs {
+		for _, w := range strings.FieldsFunc(strings.ToLower(d.Text), func(r rune) bool {
+			return !unicode.IsLetter(r)
+		}) {
+			corpusWords[w] = true
+		}
+	}
+
+	labels := make(map[string]bool)
+	for _, topic := range got {
+		t.Logf("topic %d %v: %q %v", topic.ID, topic.PaperIDs, topic.Label, topic.TopTerms)
+		labels[topic.Label] = true
+		ids := slices.Clone(topic.PaperIDs)
+		slices.Sort(ids)
+		if !slices.Equal(ids, []int64{1, 2, 3}) && !slices.Equal(ids, []int64{4, 5, 6}) {
+			t.Errorf("topic %d mixes groups: %v", topic.ID, ids)
+		}
+		for _, term := range topic.TopTerms {
+			for _, w := range strings.Fields(term) {
+				if !corpusWords[w] {
+					t.Errorf("topic %d term %q contains %q, which is not a corpus word (stem leaked?)", topic.ID, term, w)
+				}
+			}
+		}
+	}
+
+	// The most frequent surface form of each collapsed phrase is displayed.
+	joined := strings.Join(slices.Sorted(maps.Keys(labels)), " | ")
+	for _, want := range []string{"Нейронные Сети", "Донные Осадки"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("labels %q do not contain %q", joined, want)
+		}
 	}
 }
 

@@ -2,24 +2,17 @@ package recsys
 
 import (
 	"math"
-	"regexp"
-	"strings"
-	"unicode"
 
-	"github.com/bbalet/stopwords"
+	"github.com/qnqatop/papeer/internal/textproc"
 )
 
-// rgx удаляет всё кроме букв (Unicode), цифр и пробелов.
-var rgx = regexp.MustCompile(`[^\p{L}\p{N}\s]+`)
-
-// CleanText очищает текст: нижний регистр, удаление знаков и стоп-слов.
-// Поддерживает латиницу и кириллицу.
+// CleanText превращает текст в список основ (стемов) слов: нижний регистр,
+// только буквы, без английских и русских стоп-слов и академических шаблонов,
+// стемминг Snowball по алфавиту слова (см. textproc.Tokenize). Тексты статей
+// и boost-ключевые слова проходят через одну и ту же функцию, поэтому
+// "нейронные сети" в ключевых словах совпадает с "нейронных сетей" в аннотации.
 func CleanText(text string) []string {
-	text = strings.Map(unicode.ToLower, text)
-	text = rgx.ReplaceAllString(text, " ")
-	// Удаляем английские стоп-слова
-	clean := stopwords.CleanString(text, "en", false)
-	return strings.Fields(clean)
+	return textproc.Stems(text)
 }
 
 // TFIDFEngine хранит статистику корпуса для расчёта IDF.

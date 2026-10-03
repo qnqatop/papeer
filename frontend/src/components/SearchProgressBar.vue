@@ -56,7 +56,7 @@ const percent = computed(() => {
   left: 200px;
   right: 0;
   padding: 8px 16px;
-  background: rgba(15, 23, 42, 0.95);
+  background: var(--surface-glass);
   border-top: 1px solid var(--surface-border, rgba(148, 163, 184, 0.12));
   z-index: 100;
   backdrop-filter: blur(8px);

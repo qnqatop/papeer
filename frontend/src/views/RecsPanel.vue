@@ -76,7 +76,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   NText, NSpace, NSelect, NSpin, NEmpty,
@@ -84,7 +84,7 @@ import {
 } from 'naive-ui'
 import { ListPapers, ListAxes, UpdatePaperStatus } from '../../wailsjs/go/app/App'
 import { db } from '../../wailsjs/go/models'
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { useWailsEvent } from '../composables/useWailsEvent'
 import { useFirstVisitHint } from '../composables/useFirstVisitHint'
 
 const props = defineProps<{ profileId: number }>()
@@ -214,10 +214,7 @@ watch(selectedAxisId, () => {
 onMounted(async () => {
   await loadAxes()
   await loadRecs()
-  EventsOn('ai_scores_updated', () => loadRecs())
 })
 
-onUnmounted(() => {
-  EventsOff('ai_scores_updated')
-})
+useWailsEvent('ai_scores_updated', () => loadRecs())
 </script>

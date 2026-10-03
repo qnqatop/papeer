@@ -428,14 +428,6 @@ func (a *App) GetCitationGraph(profileID int64, minMentions int) (*CitationGraph
 	}, nil
 }
 
-// GetMissingKeyPapers returns external papers most referenced by user's papers.
-func (a *App) GetMissingKeyPapers(profileID int64, limit int) ([]db.ExternalCitation, error) {
-	if limit <= 0 {
-		limit = 20
-	}
-	return a.db.GetExternalCitations(profileID, 2, limit)
-}
-
 // GetCoverageGaps returns external citations (candidate "missing" papers)
 // with mention_count >= minMentions, sorted by mention_count desc, each
 // annotated with the internal paper IDs that reference or are cited

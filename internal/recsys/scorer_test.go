@@ -273,3 +273,25 @@ func TestCleanText_Unicode(t *testing.T) {
 		t.Error("CleanText сломал латиницу")
 	}
 }
+
+// Ключевые слова и тексты статей стеммируются одинаково: разные падежи и
+// числа дают одни и те же токены, а 2-буквенные русские слова и
+// академические шаблоны ("метод", "исследование") отбрасываются.
+func TestCleanText_RussianInflectionsMatch(t *testing.T) {
+	a := CleanText("нейронные сети")
+	b := CleanText("Обучение нейронных сетей: метод и исследование")
+	if len(a) != 2 {
+		t.Fatalf("CleanText(нейронные сети) = %v, want 2 stems", a)
+	}
+	set := TokenSet(b)
+	for _, tok := range a {
+		if !set[tok] {
+			t.Errorf("stem %q of the keyword is missing in %v", tok, b)
+		}
+	}
+	for _, tok := range b {
+		if tok == "метод" || tok == "исследован" || tok == "и" {
+			t.Errorf("CleanText kept stopword/boilerplate %q in %v", tok, b)
+		}
+	}
+}
