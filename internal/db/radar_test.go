@@ -68,72 +68,6 @@ func TestEnsureTag_ReturnsExisting(t *testing.T) {
 	}
 }
 
-func TestGetPaperIDsAfterTime_FindsNewPapers(t *testing.T) {
-	d := testDB(t)
-
-	p := &Profile{Name: "test", YearMin: 2020, MaxPerQuery: 10}
-	if err := d.CreateProfile(p); err != nil {
-		t.Fatal(err)
-	}
-
-	// Insert a paper and record the time.
-	before := time.Now().UTC()
-	paper := &Paper{
-		ProfileID:       p.ID,
-		Title:           "New Radar Paper",
-		TitleNormalized: "new radar paper",
-		Status:          "new",
-	}
-	d.insertPaper(paper)
-
-	// Should find it.
-	ids, err := d.GetPaperIDsAfterTime(p.ID, before)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 1 {
-		t.Fatalf("expected 1 new paper, got %d", len(ids))
-	}
-	if ids[0] != paper.ID {
-		t.Fatalf("expected paper id %d, got %d", paper.ID, ids[0])
-	}
-
-	// Should not find papers inserted before the cutoff.
-	after := time.Now().UTC().Add(time.Second)
-	ids, err = d.GetPaperIDsAfterTime(p.ID, after)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 0 {
-		t.Fatalf("expected 0 papers after cutoff, got %d", len(ids))
-	}
-}
-
-func TestGetPaperIDsAfterTime_ScopedToProfile(t *testing.T) {
-	d := testDB(t)
-
-	p1 := &Profile{Name: "p1", YearMin: 2020, MaxPerQuery: 10}
-	if err := d.CreateProfile(p1); err != nil {
-		t.Fatal(err)
-	}
-	p2 := &Profile{Name: "p2", YearMin: 2020, MaxPerQuery: 10}
-	if err := d.CreateProfile(p2); err != nil {
-		t.Fatal(err)
-	}
-
-	before := time.Now().UTC()
-	d.insertPaper(&Paper{ProfileID: p1.ID, Title: "P1 Paper", TitleNormalized: "p1 paper", Status: "new"})
-	d.insertPaper(&Paper{ProfileID: p2.ID, Title: "P2 Paper", TitleNormalized: "p2 paper", Status: "new"})
-
-	ids, err := d.GetPaperIDsAfterTime(p1.ID, before)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 1 {
-		t.Fatalf("expected 1 paper for p1, got %d", len(ids))
-	}
-}
-
 func TestSetAxisRadarRun_UpdatesTimestamp(t *testing.T) {
 	d := testDB(t)
 
@@ -161,8 +95,7 @@ func TestSetAxisRadarRun_UpdatesTimestamp(t *testing.T) {
 	}
 
 	// Set the timestamp.
-	ts := "2026-05-06 12:00:00"
-	if _, err := d.Exec(`UPDATE axes SET last_radar_run=? WHERE id=?`, ts, axis.ID); err != nil {
+	if err := d.SetAxisRadarRun(axis.ID, time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
 

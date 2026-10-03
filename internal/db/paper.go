@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,52 +10,165 @@ import (
 	"github.com/qnqatop/papeer/internal/ptr"
 )
 
+// dbtx is the query surface shared by *sql.DB and *sql.Tx. The DB has a
+// single connection (SetMaxOpenConns(1)), so code running inside a
+// transaction must issue every query through the tx — a query on the *sql.DB
+// would wait for the connection the tx holds and deadlock.
+type dbtx interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// UpsertResult is the outcome of upserting one paper in UpsertPapers.
+type UpsertResult struct {
+	ID       int64 // row the paper was inserted as or merged into (0 on error)
+	Inserted bool  // true for a new row, false when merged into an existing one
+	Err      error // per-paper failure; the paper's changes were rolled back
+}
+
 // UpsertPaper inserts a paper or merges it with an existing one (by DOI or normalized title).
 // On conflict: merges sources, keeps best pdf_url, takes max citation_count, longest abstract.
+// p.ID is set to the inserted or merged-into row.
 func (d *DB) UpsertPaper(p *Paper) error {
-	// Try to find existing paper by DOI or normalized title.
-	var existingID int64
-	var found bool
+	res, err := d.UpsertPapers([]*Paper{p})
+	if err != nil {
+		return err
+	}
+	return res[0].Err
+}
 
-	if p.DOI != nil && *p.DOI != "" {
-		err := d.QueryRow(`SELECT id FROM papers WHERE profile_id=? AND doi=?`, p.ProfileID, *p.DOI).Scan(&existingID)
-		if err == nil {
-			found = true
+// UpsertPapers upserts papers (see UpsertPaper) in one transaction, with a
+// savepoint per paper: a paper that fails is rolled back alone and reported
+// in its UpsertResult while the others are still saved. The returned error is
+// only for transaction-level failures, in which case nothing was saved.
+// Each successfully saved paper gets its ID set.
+func (d *DB) UpsertPapers(papers []*Paper) ([]UpsertResult, error) {
+	results := make([]UpsertResult, len(papers))
+	if len(papers) == 0 {
+		return results, nil
+	}
+	origIDs := make([]int64, len(papers))
+	for i, p := range papers {
+		if p != nil {
+			origIDs[i] = p.ID
 		}
 	}
-	if !found {
-		err := d.QueryRow(`SELECT id FROM papers WHERE profile_id=? AND title_normalized=?`, p.ProfileID, p.TitleNormalized).Scan(&existingID)
-		if err == nil {
-			found = true
+	// On any transaction-level failure nothing is saved: restore the IDs so
+	// callers don't see rows that were rolled back.
+	restoreIDs := func() {
+		for i, p := range papers {
+			if p != nil {
+				p.ID = origIDs[i]
+			}
 		}
 	}
 
+	tx, err := d.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin upsert: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+			restoreIDs()
+		}
+	}()
+
+	for i, p := range papers {
+		if p == nil {
+			results[i].Err = fmt.Errorf("nil paper")
+			continue
+		}
+		if _, err := tx.Exec(`SAVEPOINT upsert_paper`); err != nil {
+			return nil, fmt.Errorf("savepoint: %w", err)
+		}
+		inserted, err := upsertPaper(tx, p)
+		if err != nil {
+			p.ID = origIDs[i]
+			if _, rbErr := tx.Exec(`ROLLBACK TO upsert_paper`); rbErr != nil {
+				return nil, fmt.Errorf("rollback paper %q: %w (after %v)", p.Title, rbErr, err)
+			}
+			results[i] = UpsertResult{Err: err}
+		} else {
+			results[i] = UpsertResult{ID: p.ID, Inserted: inserted}
+		}
+		// ROLLBACK TO keeps the savepoint open; release it either way.
+		if _, err := tx.Exec(`RELEASE upsert_paper`); err != nil {
+			return nil, fmt.Errorf("release savepoint: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit upsert: %w", err)
+	}
+	committed = true
+	return results, nil
+}
+
+// upsertPaper inserts or merges one paper through q and links it to its axis.
+func upsertPaper(q dbtx, p *Paper) (inserted bool, err error) {
+	existingID, found, err := findPaperID(q, p)
+	if err != nil {
+		return false, err
+	}
+
 	if !found {
-		if err := d.insertPaper(p); err != nil {
-			return err
+		if err := insertPaper(q, p); err != nil {
+			return false, err
 		}
 		// Link to axis.
 		if p.AxisID != nil {
-			return d.LinkPaperAxis(p.ID, *p.AxisID)
+			if err := linkPaperAxis(q, p.ID, *p.AxisID); err != nil {
+				return false, err
+			}
 		}
-		return nil
+		return true, nil
 	}
 
-	if err := d.mergePaper(existingID, p); err != nil {
-		return err
+	if err := mergePaper(q, existingID, p); err != nil {
+		return false, err
 	}
 	// Report the id of the row the paper was merged into, so callers can
 	// load or update it (status, s2 id, ...).
 	p.ID = existingID
 	// Link existing paper to new axis.
 	if p.AxisID != nil {
-		return d.LinkPaperAxis(existingID, *p.AxisID)
+		if err := linkPaperAxis(q, existingID, *p.AxisID); err != nil {
+			return false, err
+		}
 	}
-	return nil
+	return false, nil
 }
 
-func (d *DB) insertPaper(p *Paper) error {
-	res, err := d.Exec(`INSERT INTO papers (profile_id, axis_id, title, title_normalized, abstract, year, venue, authors, doi, arxiv_id, pdf_url, pdf_source, citation_count, pre_score, score_reasons, sources, status, notes)
+// findPaperID looks up an existing paper of the same profile by DOI, then by
+// normalized title. Only sql.ErrNoRows means "not found"; any other error is
+// returned so a failing query can't turn into a duplicate insert.
+func findPaperID(q dbtx, p *Paper) (int64, bool, error) {
+	var id int64
+	if p.DOI != nil && *p.DOI != "" {
+		err := q.QueryRow(`SELECT id FROM papers WHERE profile_id=? AND doi=?`, p.ProfileID, *p.DOI).Scan(&id)
+		switch {
+		case err == nil:
+			return id, true, nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return 0, false, fmt.Errorf("find paper by doi: %w", err)
+		}
+	}
+	err := q.QueryRow(`SELECT id FROM papers WHERE profile_id=? AND title_normalized=?`, p.ProfileID, p.TitleNormalized).Scan(&id)
+	switch {
+	case err == nil:
+		return id, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, nil
+	default:
+		return 0, false, fmt.Errorf("find paper by title: %w", err)
+	}
+}
+
+func insertPaper(q dbtx, p *Paper) error {
+	res, err := q.Exec(`INSERT INTO papers (profile_id, axis_id, title, title_normalized, abstract, year, venue, authors, doi, arxiv_id, pdf_url, pdf_source, citation_count, pre_score, score_reasons, sources, status, notes)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ProfileID, p.AxisID, p.Title, p.TitleNormalized, p.Abstract, p.Year, p.Venue,
 		p.Authors, p.DOI, p.ArxivID, p.PdfURL, p.PdfSource,
@@ -66,9 +180,9 @@ func (d *DB) insertPaper(p *Paper) error {
 	return nil
 }
 
-func (d *DB) mergePaper(existingID int64, incoming *Paper) error {
+func mergePaper(q dbtx, existingID int64, incoming *Paper) error {
 	// Load existing.
-	existing, err := d.GetPaper(existingID)
+	existing, err := getPaper(q, existingID)
 	if err != nil {
 		return err
 	}
@@ -130,7 +244,7 @@ func (d *DB) mergePaper(existingID int64, incoming *Paper) error {
 		reasons = incoming.ScoreReasons
 	}
 
-	_, err = d.Exec(`UPDATE papers SET sources=?, citation_count=?, abstract=?, pdf_url=?, pdf_source=?, doi=?, arxiv_id=?, venue=?, pre_score=?, score_reasons=? WHERE id=?`,
+	_, err = q.Exec(`UPDATE papers SET sources=?, citation_count=?, abstract=?, pdf_url=?, pdf_source=?, doi=?, arxiv_id=?, venue=?, pre_score=?, score_reasons=? WHERE id=?`,
 		merged, cc, abstract, pdfURL, pdfSource, doi, arxivID, venue, score, reasons, existingID)
 	return err
 }
@@ -148,8 +262,12 @@ func sourcePriority(src string) int {
 }
 
 func (d *DB) GetPaper(id int64) (*Paper, error) {
+	return getPaper(d.DB, id)
+}
+
+func getPaper(q dbtx, id int64) (*Paper, error) {
 	var p Paper
-	err := d.QueryRow(`SELECT id, profile_id, axis_id, title, title_normalized, abstract, year, venue, authors, doi, arxiv_id, pdf_url, pdf_source, citation_count, pre_score, score_reasons, sources, status, user_score, notes, found_at, ai_match_score FROM papers WHERE id=?`, id).
+	err := q.QueryRow(`SELECT id, profile_id, axis_id, title, title_normalized, abstract, year, venue, authors, doi, arxiv_id, pdf_url, pdf_source, citation_count, pre_score, score_reasons, sources, status, user_score, notes, found_at, ai_match_score FROM papers WHERE id=?`, id).
 		Scan(&p.ID, &p.ProfileID, &p.AxisID, &p.Title, &p.TitleNormalized, &p.Abstract, &p.Year, &p.Venue, &p.Authors, &p.DOI, &p.ArxivID, &p.PdfURL, &p.PdfSource, &p.CitationCount, &p.PreScore, &p.ScoreReasons, &p.Sources, &p.Status, &p.UserScore, &p.Notes, &p.FoundAt, &p.AiMatchScore)
 	if err != nil {
 		return nil, err
@@ -548,7 +666,11 @@ func (d *DB) ExportPapers(profileID int64) ([]Paper, error) {
 
 // LinkPaperAxis records that a paper was found via a specific axis.
 func (d *DB) LinkPaperAxis(paperID, axisID int64) error {
-	_, err := d.Exec(`INSERT OR IGNORE INTO paper_axes (paper_id, axis_id) VALUES (?, ?)`, paperID, axisID)
+	return linkPaperAxis(d.DB, paperID, axisID)
+}
+
+func linkPaperAxis(q dbtx, paperID, axisID int64) error {
+	_, err := q.Exec(`INSERT OR IGNORE INTO paper_axes (paper_id, axis_id) VALUES (?, ?)`, paperID, axisID)
 	return err
 }
 

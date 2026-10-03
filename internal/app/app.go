@@ -2,12 +2,9 @@ package app
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/qnqatop/papeer/internal/export"
-	"github.com/qnqatop/papeer/internal/recsys"
-	"github.com/qnqatop/papeer/internal/updater"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -20,10 +17,13 @@ import (
 	"github.com/qnqatop/papeer/internal/db"
 	"github.com/qnqatop/papeer/internal/download"
 	dlsources "github.com/qnqatop/papeer/internal/download/sources"
+	"github.com/qnqatop/papeer/internal/export"
 	"github.com/qnqatop/papeer/internal/httpclient"
 	"github.com/qnqatop/papeer/internal/llm"
+	"github.com/qnqatop/papeer/internal/recsys"
 	"github.com/qnqatop/papeer/internal/search"
 	"github.com/qnqatop/papeer/internal/server"
+	"github.com/qnqatop/papeer/internal/updater"
 )
 
 // Version is the build version stamp, overwritten via:
@@ -97,6 +97,10 @@ type App struct {
 	pendingUpdate *updater.UpdateInfo
 	dlPaperMu     sync.Mutex
 	dlPaperSet    map[int64]bool // guards against duplicate single-paper downloads
+
+	s2KeyMu     sync.Mutex // guards s2Key, s2KeyLoaded
+	s2Key       string     // cached Semantic Scholar API key (keychain or legacy fallback)
+	s2KeyLoaded bool
 
 	rateLimitsOnce sync.Once
 	rateLimits     *httpclient.RateLimitRegistry // shared by every client from makeHTTPClient
@@ -197,11 +201,13 @@ func (a *App) Startup(ctx context.Context) {
 		return
 	}
 	a.db = database
-	server.SetPDFDB(database)
 
 	// One-time migration of the legacy plaintext DeepSeek key into an LLM profile
 	// + OS keychain.
 	a.backfillLLMProfile()
+
+	// One-time migration of the plaintext Semantic Scholar key into the keychain.
+	a.migrateS2Key()
 
 	// Start radar in background after a delay, if enabled.
 	a.safeGo("radar", a.startRadarIfEnabled)
@@ -305,11 +311,6 @@ func (a *App) Shutdown(_ context.Context) {
 	}
 }
 
-// GetDB returns the underlying database connection.
-func (a *App) GetDB() *db.DB {
-	return a.db
-}
-
 // ── Profiles ─────────────────────────────────────────────
 
 func (a *App) ListProfiles() ([]db.Profile, error) {
@@ -363,26 +364,6 @@ func (a *App) SelectDirectory(title string) (string, error) {
 	})
 }
 
-// ── Settings ────────────────────────────────────────────
-
-func (a *App) GetSettings() (map[string]string, error) {
-	return a.db.GetAllSettings()
-}
-
-func (a *App) SaveSetting(key, value string) error {
-	return a.db.SetSetting(key, value)
-}
-
-// TestProxy checks if a proxy URL is reachable by making a test request.
-func (a *App) TestProxy(proxyURL string) error {
-	client, err := httpclient.NewWithProxy("", proxyURL)
-	if err != nil {
-		return err
-	}
-	var result map[string]interface{}
-	return client.DoJSON(context.Background(), "https://httpbin.org/get", &result)
-}
-
 // ProviderStatus is the result of probing one search provider.
 type ProviderStatus struct {
 	Name      string `json:"name"`
@@ -391,9 +372,10 @@ type ProviderStatus struct {
 	LatencyMs int64  `json:"latency_ms"`
 }
 
-// CheckSearchProviders probes the four search-provider endpoints in parallel
-// and returns per-provider reachability. The current proxy setting (if any)
-// is used so the tester sees the same routing the real search would take.
+// CheckSearchProviders probes every registered search provider (see
+// search.Specs) in parallel and returns per-provider reachability. The
+// current proxy setting (if any) is used so the tester sees the same routing
+// the real search would take.
 //
 // Timeout is short (15s per provider) so a hung endpoint doesn't block the UI.
 func (a *App) CheckSearchProviders() ([]ProviderStatus, error) {
@@ -402,38 +384,27 @@ func (a *App) CheckSearchProviders() ([]ProviderStatus, error) {
 		return nil, err
 	}
 
-	type probe struct {
-		name string
-		url  string
-		json bool // true → DoJSON, false → DoText (for Atom XML)
-	}
-	probes := []probe{
-		{"semantic_scholar", "https://api.semanticscholar.org/graph/v1/paper/search?query=test&limit=1", true},
-		{"openalex", "https://api.openalex.org/works?per-page=1", true},
-		{"crossref", "https://api.crossref.org/works?rows=1", true},
-		{"arxiv", "http://export.arxiv.org/api/query?search_query=test&max_results=1", false},
-		{"cyberleninka", "https://cyberleninka.ru", false},
-	}
+	specs := search.Specs()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	results := make([]ProviderStatus, len(probes))
+	results := make([]ProviderStatus, len(specs))
 	var wg sync.WaitGroup
-	for i, p := range probes {
+	for i, p := range specs {
 		wg.Add(1)
-		go func(i int, p probe) {
+		go func(i int, p search.ProviderSpec) {
 			defer wg.Done()
 			start := time.Now()
 			var err error
-			if p.json {
+			if p.ProbeJSON {
 				var sink map[string]interface{}
-				err = client.DoJSON(ctx, p.url, &sink)
+				err = client.DoJSON(ctx, p.ProbeURL, &sink)
 			} else {
-				_, err = client.DoText(ctx, p.url)
+				_, err = client.DoText(ctx, p.ProbeURL)
 			}
 			s := ProviderStatus{
-				Name:      p.name,
+				Name:      p.Name,
 				OK:        err == nil,
 				LatencyMs: time.Since(start).Milliseconds(),
 			}
@@ -530,10 +501,11 @@ func (a *App) GetPaper(id int64) (*db.Paper, error) {
 func (a *App) UpdatePaperStatus(id int64, status string) error {
 	err := a.db.UpdatePaperStatus(id, status)
 
-	// Если статус изменился на approved или rejected, запускаем пересчет в фоне
+	// Approving or rejecting a paper changes the training signal: recompute
+	// the AI scores of its axis in the background.
 	if err == nil && (status == "approved" || status == "rejected") {
 		a.safeGo("RecalculateAIScores", func() {
-			// Получаем статью, чтобы узнать её AxisID
+			// The paper's axis decides which scores to recompute.
 			paper, err := a.db.GetPaper(id)
 			if err == nil && paper.AxisID != nil {
 				a.RecalculateAIScores(paper.ProfileID, *paper.AxisID)
@@ -543,6 +515,9 @@ func (a *App) UpdatePaperStatus(id int64, status string) error {
 	return err
 }
 
+// RecalculateAIScores re-scores the axis' papers from the user's approvals
+// (needs at least 3 approved papers) and reports progress as "ai_log"
+// search:progress events.
 func (a *App) RecalculateAIScores(profileID int64, axisID int64) {
 	a.recMu.Lock()
 	defer a.recMu.Unlock()
@@ -561,11 +536,11 @@ func (a *App) RecalculateAIScores(profileID int64, axisID int64) {
 		Limit:     10000,
 	})
 	if err != nil {
-		sendLog(fmt.Sprintf("❌ Ошибка SQL: %v, axes= %d", err, axisID))
+		sendLog(fmt.Sprintf("Failed to list papers of axis %d: %v", axisID, err))
 		return
 	}
 	if len(result.Papers) == 0 {
-		sendLog(fmt.Sprintf("⚠️ В оси нет статей (Найдено статей: 0), axes= %d", axisID))
+		sendLog(fmt.Sprintf("Axis %d has no papers, nothing to score", axisID))
 		return
 	}
 
@@ -576,16 +551,16 @@ func (a *App) RecalculateAIScores(profileID int64, axisID int64) {
 		}
 	}
 
-	sendLog(fmt.Sprintf("🔍 Запуск пересчета. Всего статей в оси: %d. Одобрено: %d (нужно минимум 3)", len(result.Papers), approvedCount))
+	sendLog(fmt.Sprintf("Recalculating scores: %d papers in axis, %d approved (at least 3 required)", len(result.Papers), approvedCount))
 
 	if approvedCount < 3 {
-		sendLog("⚠️ Отмена: сработала защита 'Холодного старта' (мало одобренных).")
+		sendLog("Skipped: too few approved papers (cold-start guard)")
 		return
 	}
 
 	axis, err := a.db.GetAxis(axisID)
 	if err != nil {
-		sendLog(fmt.Sprintf("❌ Ошибка: не удалось получить данные оси ID %d", axisID))
+		sendLog(fmt.Sprintf("Failed to load axis %d: %v", axisID, err))
 		return
 	}
 
@@ -599,13 +574,13 @@ func (a *App) RecalculateAIScores(profileID int64, axisID int64) {
 	scores := recsys.CalculateSmartScores(result.Papers, boosts)
 
 	if len(scores) > 0 {
-		sendLog(fmt.Sprintf("✅ Успех: новые оценки назначены для %d статей", len(scores)))
+		sendLog(fmt.Sprintf("Assigned new scores to %d papers", len(scores)))
 	} else if approvedCount >= 3 {
-		sendLog("⚠️ Странно: алгоритм отработал, но вернул 0 оценок (возможно, нет статей со статусом 'new')")
+		sendLog("Scoring returned no scores (probably no papers with status 'new')")
 	}
 
 	if err := a.db.UpdateAIScores(scores); err != nil {
-		sendLog(fmt.Sprintf("❌ Ошибка записи скоров в БД: %v", err))
+		sendLog(fmt.Sprintf("Failed to save scores: %v", err))
 		return
 	}
 	runtime.EventsEmit(a.ctx, "ai_scores_updated")
@@ -662,13 +637,7 @@ func (a *App) searchAxis(ctx context.Context, profileID int64, axisID int64) (in
 		return 0, fmt.Errorf("http client: %w", err)
 	}
 
-	providers := []search.Provider{
-		search.NewSemanticScholar(client),
-		search.NewOpenAlex(client, profile.Email),
-		search.NewCrossref(client),
-		search.NewArXiv(client),
-		search.NewCyberLeninka(client, profile.Email),
-	}
+	providers := search.NewProviders(client, profile.Email)
 
 	onEvent := func(e search.SearchEvent) {
 		runtime.EventsEmit(a.ctx, "search:progress", e)
@@ -687,7 +656,7 @@ func (a *App) searchAxis(ctx context.Context, profileID int64, axisID int64) (in
 	}
 	const maxPerQuery = 10
 
-	count, err := engine.SearchAxis(ctx, search.SearchAxisInput{
+	res, err := engine.SearchAxis(ctx, search.SearchAxisInput{
 		ProfileID:   profileID,
 		Axis:        *axis,
 		Queries:     queries,
@@ -695,7 +664,7 @@ func (a *App) searchAxis(ctx context.Context, profileID int64, axisID int64) (in
 		YearMin:     yearMin,
 		MaxPerQuery: maxPerQuery,
 	})
-	return count, err
+	return res.Saved, err
 }
 
 // SearchAllAxes runs search for all axes of a profile.
@@ -945,7 +914,7 @@ func (a *App) makeHTTPClient(email string) (*httpclient.Client, error) {
 	client.EnableSSRFGuard()
 	download.SetChromeProxy(proxyURL)
 
-	if s2Key, _ := a.db.GetSetting("semantic_scholar_api_key"); s2Key != "" {
+	if s2Key := a.semanticScholarKey(); s2Key != "" {
 		client.SetHostHeader("api.semanticscholar.org", "x-api-key", s2Key)
 		// With an API key, Semantic Scholar's documented rate limit is ~1
 		// req/s (vs ~100 req/5min ≈ 0.33 req/s unauthenticated). Without this
@@ -1048,19 +1017,12 @@ func (a *App) runRadar(parent context.Context, profileID int64) (int, error) {
 		return 0, fmt.Errorf("list axes: %w", err)
 	}
 
-	startTime := time.Now()
 	client, err := a.makeHTTPClient(profile.Email)
 	if err != nil {
 		return 0, fmt.Errorf("http client: %w", err)
 	}
 
-	providers := []search.Provider{
-		search.NewSemanticScholar(client),
-		search.NewOpenAlex(client, profile.Email),
-		search.NewCrossref(client),
-		search.NewArXiv(client),
-		search.NewCyberLeninka(client, profile.Email),
-	}
+	providers := search.NewProviders(client, profile.Email)
 
 	radarLimit := 3
 	// Radar looks at papers from the current and previous year.
@@ -1085,6 +1047,9 @@ func (a *App) runRadar(parent context.Context, profileID int64) (int, error) {
 	}()
 
 	totalProcessed := 0
+	// Papers inserted by this run (merges into existing rows don't count):
+	// these, and only these, get the "monitoring" tag.
+	var newIDs []int64
 	for _, axis := range axes {
 		if ctx.Err() != nil {
 			break // cancelled: still tag what was found so far
@@ -1103,7 +1068,7 @@ func (a *App) runRadar(parent context.Context, profileID int64) (int, error) {
 			queries[i] = q.Text
 		}
 
-		count, err := engine.SearchAxis(ctx, search.SearchAxisInput{
+		res, err := engine.SearchAxis(ctx, search.SearchAxisInput{
 			ProfileID:   profileID,
 			Axis:        axis,
 			Queries:     queries,
@@ -1112,32 +1077,29 @@ func (a *App) runRadar(parent context.Context, profileID int64) (int, error) {
 			MaxPerQuery: radarLimit,
 		})
 		if err != nil {
-			runtime.LogErrorf(ctx, "radar: axis %s: %v", axis.AxisKey, err)
+			a.logErrorf("radar: axis %s: %v", axis.AxisKey, err)
 			continue
 		}
-		totalProcessed += count
+		totalProcessed += res.Saved
+		newIDs = append(newIDs, res.NewPaperIDs...)
 
 		// Record when this axis was last checked.
-		a.db.SetAxisRadarRun(axis.ID, time.Now())
-	}
-
-	// Find genuinely new papers (INSERT, not UPDATE during merge).
-	newIDs, err := a.db.GetPaperIDsAfterTime(profileID, startTime)
-	if err != nil {
-		return 0, fmt.Errorf("find new papers: %w", err)
+		if err := a.db.SetAxisRadarRun(axis.ID, time.Now()); err != nil {
+			a.logErrorf("radar: axis %s: record run: %v", axis.AxisKey, err)
+		}
 	}
 
 	// Tag new papers with the "monitoring" tag.
 	if len(newIDs) > 0 {
 		tagID, err := a.db.EnsureTag(profileID, "monitoring", radarTagColor)
 		if err != nil {
-			runtime.LogErrorf(ctx, "radar: ensure tag: %v", err)
+			a.logErrorf("radar: ensure tag: %v", err)
 		} else {
 			for _, paperID := range newIDs {
 				// Add the tag without a read-modify-write of the paper's
 				// tags, so a failed read can't wipe its existing tags.
 				if err := a.db.AddTagToPaper(tagID, paperID); err != nil {
-					runtime.LogErrorf(ctx, "radar: tag paper %d: %v", paperID, err)
+					a.logErrorf("radar: tag paper %d: %v", paperID, err)
 				}
 			}
 		}
@@ -1159,8 +1121,8 @@ var radarStartDelay = 10 * time.Second
 
 // initRadar registers the stop channel and cancellable context of the radar
 // scheduler. It returns ok=false if stopRadar already ran (app shutting down).
-// radarMu is held only here and in stopRadar — never across a radar run —
-// so stopRadar can't block behind the scheduler.
+// radarMu is held only here, in restartRadar and in stopRadar — never across
+// a radar run — so stopRadar can't block behind the scheduler.
 func (a *App) initRadar() (stop <-chan struct{}, ctx context.Context, ok bool) {
 	a.radarMu.Lock()
 	defer a.radarMu.Unlock()
@@ -1192,28 +1154,8 @@ func (a *App) startRadarIfEnabled() {
 		return
 	}
 
-	runAllProfiles := func() {
-		profiles, err := a.db.ListProfiles()
-		if err != nil {
-			return
-		}
-		for _, p := range profiles {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			count, err := a.runRadar(ctx, p.ID)
-			if err != nil {
-				runtime.LogErrorf(a.ctx, "radar: profile %q: %v", p.Name, err)
-			} else if count > 0 {
-				runtime.LogInfof(a.ctx, "radar: profile %q: %d new papers", p.Name, count)
-			}
-		}
-	}
-
 	// Run immediately once, then schedule periodic runs.
-	runAllProfiles()
+	a.runRadarAllProfiles(ctx, stop)
 
 	freq, _ := a.db.GetSetting("radar_frequency")
 	if freq == "" || freq == "startup" {
@@ -1225,7 +1167,68 @@ func (a *App) startRadarIfEnabled() {
 		return
 	}
 
-	radarLoop(stop, duration, runAllProfiles)
+	radarLoop(stop, duration, func() { a.runRadarAllProfiles(ctx, stop) })
+}
+
+// runRadarAllProfiles runs the radar for every profile until stop is closed.
+func (a *App) runRadarAllProfiles(ctx context.Context, stop <-chan struct{}) {
+	profiles, err := a.db.ListProfiles()
+	if err != nil {
+		return
+	}
+	for _, p := range profiles {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		count, err := a.runRadar(ctx, p.ID)
+		if err != nil {
+			a.logErrorf("radar: profile %q: %v", p.Name, err)
+		} else if count > 0 {
+			runtime.LogInfof(a.ctx, "radar: profile %q: %d new papers", p.Name, count)
+		}
+	}
+}
+
+// restartRadar reschedules the radar after its settings changed: the current
+// scheduler (and any in-flight run) is stopped and, if the radar is enabled
+// with a periodic frequency, a new loop is started. Unlike startup there is
+// no immediate run — the first run happens after one interval. It does
+// nothing once stopRadar ran (app shutting down).
+func (a *App) restartRadar() {
+	enabled, _ := a.db.GetSetting("enable_radar")
+	freq, _ := a.db.GetSetting("radar_frequency")
+	interval := parseRadarFrequency(freq)
+
+	a.radarMu.Lock()
+	defer a.radarMu.Unlock()
+	if a.radarStopped {
+		return
+	}
+	if a.radarStop != nil {
+		close(a.radarStop)
+		a.radarStop = nil
+	}
+	if a.radarCancel != nil {
+		a.radarCancel()
+		a.radarCancel = nil
+	}
+	if enabled != "true" || interval <= 0 {
+		return
+	}
+
+	parent := a.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	stop := make(chan struct{})
+	ctx, cancel := context.WithCancel(parent)
+	a.radarStop = stop
+	a.radarCancel = cancel
+	a.safeGo("radar", func() {
+		radarLoop(stop, interval, func() { a.runRadarAllProfiles(ctx, stop) })
+	})
 }
 
 // radarLoop calls run every interval until stop is closed.
@@ -2068,6 +2071,25 @@ func (a *App) OpenSystemPDF(paperID int64) error {
 	return nil
 }
 
+// NewPDFHandler returns the /api/pdf/{paperID} handler for the Wails asset
+// server, resolving papers through a's database. It is a package function,
+// not a method: every exported *App method becomes a frontend RPC.
+func NewPDFHandler(a *App) http.Handler {
+	return server.NewPDFHandler(func(paperID int64) (string, error) {
+		if a.db == nil {
+			return "", server.ErrUnavailable // before Startup opened the DB
+		}
+		path, err := a.db.GetPaperPDFPath(paperID)
+		if err != nil {
+			return "", err
+		}
+		if err := validatePDFPath(path); err != nil {
+			return "", err
+		}
+		return path, nil
+	})
+}
+
 // validatePDFPath checks that path is an absolute path to an existing .pdf
 // file before it is handed to the OS opener.
 func validatePDFPath(path string) error {
@@ -2091,19 +2113,4 @@ func validatePDFPath(path string) error {
 // local PDF file on disk.
 func (a *App) GetDownloadedPapers(profileID int64) ([]db.Paper, error) {
 	return a.db.GetDownloadedPapers(profileID)
-}
-
-// GetPaperPDFData читает PDF-файл с диска и отдаёт его в формате Base64.
-func (a *App) GetPaperPDFData(paperID int64) (string, error) {
-	path, err := a.db.GetPaperPDFPath(paperID)
-	if err != nil {
-		return "", err
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-
-	return base64.StdEncoding.EncodeToString(data), nil
 }

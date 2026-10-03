@@ -76,6 +76,8 @@ func TestArxiv_ExtractID(t *testing.T) {
 		{"http://arxiv.org/abs/2301.12345v1", "2301.12345"},
 		{"http://arxiv.org/abs/2301.12345v2", "2301.12345"},
 		{"http://arxiv.org/abs/2301.12345", "2301.12345"},
+		{"https://arxiv.org/abs/2301.12345v3", "2301.12345"},
+		{"https://arxiv.org/abs/2301.12345", "2301.12345"},
 		{"https://other.com/abs/123", ""},
 	}
 	for _, tt := range tests {

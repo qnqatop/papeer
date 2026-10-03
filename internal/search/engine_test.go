@@ -138,8 +138,11 @@ func TestEngine_SearchAxis_MockProviders(t *testing.T) {
 	}
 
 	// Should dedupe to 2 unique papers.
-	if count != 2 {
-		t.Errorf("upserted = %d, want 2", count)
+	if count.Saved != 2 {
+		t.Errorf("upserted = %d, want 2", count.Saved)
+	}
+	if len(count.NewPaperIDs) != 2 || count.Failed != 0 {
+		t.Errorf("result = %+v, want 2 new papers and no failures", count)
 	}
 
 	// Verify papers in DB.
@@ -229,8 +232,8 @@ func TestEngine_ProviderError(t *testing.T) {
 	}
 
 	// Should still upsert the paper from the working provider.
-	if count != 1 {
-		t.Errorf("count = %d, want 1", count)
+	if count.Saved != 1 {
+		t.Errorf("count = %d, want 1", count.Saved)
 	}
 
 	mu.Lock()
@@ -447,4 +450,79 @@ func TestEngine_LangScope_NoProviderEmitsError(t *testing.T) {
 
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
+}
+
+func TestEngine_SearchAxis_NewPaperIDsOnlyForInserts(t *testing.T) {
+	d := testSearchDB(t)
+	profileID := createTestSearchProfile(t, d)
+	axis := &db.Axis{ProfileID: profileID, AxisKey: "ax", Queries: []db.Query{{Text: "q"}}}
+	if err := d.SaveAxis(axis); err != nil {
+		t.Fatal(err)
+	}
+	first := &mockProvider{name: "openalex", papers: []RawPaper{
+		{Title: "Existing Paper", DOI: "10.1/existing", Source: "openalex"},
+	}}
+	input := SearchAxisInput{ProfileID: profileID, Axis: *axis, Queries: []string{"q"}, MaxPerQuery: 5}
+	if _, err := NewEngine(d, []Provider{first}, nil).SearchAxis(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+
+	second := &mockProvider{name: "openalex", papers: []RawPaper{
+		{Title: "Existing Paper", DOI: "10.1/existing", Source: "openalex"},
+		{Title: "Brand New Paper", DOI: "10.1/new", Source: "openalex"},
+	}}
+	res, err := NewEngine(d, []Provider{second}, nil).SearchAxis(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Saved != 2 || len(res.NewPaperIDs) != 1 {
+		t.Fatalf("result = %+v, want 2 saved / 1 new", res)
+	}
+	p, err := d.GetPaper(res.NewPaperIDs[0])
+	if err != nil || p.Title != "Brand New Paper" {
+		t.Errorf("new id points at %+v (%v)", p, err)
+	}
+}
+
+func TestEngine_SearchAxis_SaveErrorDoesNotAbortAxis(t *testing.T) {
+	d := testSearchDB(t)
+	profileID := createTestSearchProfile(t, d)
+	axis := &db.Axis{ProfileID: profileID, AxisKey: "ax", Queries: []db.Query{{Text: "q"}}}
+	if err := d.SaveAxis(axis); err != nil {
+		t.Fatal(err)
+	}
+	// Make exactly one paper fail to insert.
+	if _, err := d.Exec(`CREATE TRIGGER fail_bad BEFORE INSERT ON papers WHEN NEW.title = 'Bad Paper'
+		BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+	prov := &mockProvider{name: "openalex", papers: []RawPaper{
+		{Title: "Good Paper One", Source: "openalex"},
+		{Title: "Bad Paper", Source: "openalex"},
+		{Title: "Good Paper Two", Source: "openalex"},
+	}}
+
+	var mu sync.Mutex
+	var saveErrs []SearchEvent
+	engine := NewEngine(d, []Provider{prov}, func(e SearchEvent) {
+		if e.Type == "save_error" {
+			mu.Lock()
+			saveErrs = append(saveErrs, e)
+			mu.Unlock()
+		}
+	})
+	res, err := engine.SearchAxis(context.Background(), SearchAxisInput{
+		ProfileID: profileID, Axis: *axis, Queries: []string{"q"}, MaxPerQuery: 5,
+	})
+	if err != nil {
+		t.Fatalf("a single failed paper must not fail the axis: %v", err)
+	}
+	if res.Saved != 2 || res.Failed != 1 || len(res.NewPaperIDs) != 2 {
+		t.Errorf("result = %+v, want 2 saved / 1 failed", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(saveErrs) != 1 || saveErrs[0].Count != 1 || !strings.Contains(saveErrs[0].Error, "boom") {
+		t.Errorf("save_error events = %+v", saveErrs)
+	}
 }

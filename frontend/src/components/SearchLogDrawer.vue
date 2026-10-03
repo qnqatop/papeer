@@ -93,6 +93,11 @@
               &nbsp;&nbsp;{{ ev.provider }}: {{ t('searchLog.error') }} {{ ev.error }}
             </n-text>
           </template>
+          <template v-else-if="ev.type === 'save_error'">
+            <n-text style="color: var(--color-error-500, #ef4444)">
+              [{{ ev.axis }}] {{ t('searchLog.saveError', { count: ev.count, error: ev.error }) }}
+            </n-text>
+          </template>
           <template v-else-if="ev.type === 'query_done'">
             <n-text depth="2">
               &nbsp;&nbsp;{{ t('searchLog.queryTotal') }} {{ ev.count }} papers
@@ -138,6 +143,7 @@ const typeOptions = computed(() => [
   { label: t('searchLog.typeQueryStart'), value: 'query_start' },
   { label: t('searchLog.typeProviderDone'), value: 'provider_done' },
   { label: t('searchLog.typeProviderError'), value: 'provider_error' },
+  { label: t('searchLog.typeSaveError'), value: 'save_error' },
   { label: t('searchLog.typeQueryDone'), value: 'query_done' },
   { label: t('searchLog.typeAxisDone'), value: 'axis_done' },
 ])

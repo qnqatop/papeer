@@ -99,6 +99,8 @@ export const useProgressStore = defineStore('progress', () => {
         lastEvent.value = `Axis done: ${event.total} papers`
       } else if (event.type === 'provider_error') {
         lastEvent.value = `${event.provider}: error`
+      } else if (event.type === 'save_error') {
+        lastEvent.value = `${event.axis}: ${event.count} papers not saved`
       }
     })
 

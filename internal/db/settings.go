@@ -16,6 +16,12 @@ func (d *DB) SetSetting(key, value string) error {
 	return err
 }
 
+// DeleteSetting removes a key. A missing key is not an error.
+func (d *DB) DeleteSetting(key string) error {
+	_, err := d.Exec(`DELETE FROM app_settings WHERE key=?`, key)
+	return err
+}
+
 // GetAllSettings returns all settings as a map.
 func (d *DB) GetAllSettings() (map[string]string, error) {
 	rows, err := d.Query(`SELECT key, value FROM app_settings`)

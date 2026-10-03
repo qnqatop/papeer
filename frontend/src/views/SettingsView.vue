@@ -261,15 +261,26 @@
 
           <n-text strong style="font-size: 13px; display: block; margin-bottom: 4px">{{ t('settings.s2ApiKey') }}</n-text>
           <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 8px">{{ t('settings.s2ApiKeyHint') }}</n-text>
-          <n-input
-            v-model:value="s2ApiKey"
-            type="password"
-            show-password-on="click"
-            :placeholder="t('settings.s2ApiKeyPlaceholder')"
-            style="width: 360px"
-            @blur="saveS2ApiKey"
-            @keydown.enter="saveS2ApiKey"
-          />
+          <n-text v-if="s2KeyStatus.set" depth="2" style="font-size: 12px; display: block; margin-bottom: 8px">
+            {{ t('settings.s2ApiKeyCurrent', { mask: s2KeyStatus.masked }) }}
+          </n-text>
+          <n-space :size="8" align="center">
+            <n-input
+              v-model:value="s2ApiKey"
+              type="password"
+              show-password-on="click"
+              :placeholder="s2KeyStatus.set ? t('settings.s2ApiKeyReplacePlaceholder') : t('settings.s2ApiKeyPlaceholder')"
+              style="width: 360px"
+              @keydown.enter="saveS2ApiKey"
+            />
+            <n-button :loading="savingS2Key" :disabled="!s2ApiKey.trim()" @click="saveS2ApiKey">{{ t('common.save') }}</n-button>
+            <n-popconfirm v-if="s2KeyStatus.set" @positive-click="clearS2ApiKey">
+              <template #trigger>
+                <n-button :disabled="savingS2Key">{{ t('settings.s2ApiKeyClear') }}</n-button>
+              </template>
+              {{ t('settings.s2ApiKeyClearConfirm') }}
+            </n-popconfirm>
+          </n-space>
 
           <n-divider style="margin: 16px 0" />
 
@@ -390,12 +401,12 @@ import { useProfileStore } from '../stores/profile'
 import { useProgressStore } from '../stores/progress'
 import { useLLMProfilesStore } from '../stores/llmProfiles'
 import { setLocale, getLocale } from '../i18n'
-import { isInvalidEmailError } from '../utils/errors'
+import { isInvalidEmailError, localizeBackendError } from '../utils/errors'
 import {
   GetSettings, SaveSetting, TestProxy,
   ListTags, CreateTag as CreateTagAPI, DeleteTag as DeleteTagAPI,
   RunRadar, DeleteProfile as DeleteProfileAPI, AppVersion,
-  CheckSearchProviders,
+  CheckSearchProviders, SetSemanticScholarKey, GetSemanticScholarKeyStatus,
 } from '../../wailsjs/go/app/App'
 import { app, db } from '../../wailsjs/go/models'
 import ProfileFormModal from '../components/ProfileFormModal.vue'
@@ -476,25 +487,56 @@ const proxyURL = ref('')
 const testingProxy = ref(false)
 
 // --- Semantic Scholar API key ---
+// The key lives in the OS keychain; the backend only ever returns its mask,
+// so the input is write-only (enter a new key to replace the stored one).
 const s2ApiKey = ref('')
+const s2KeyStatus = ref<{ set: boolean; masked: string }>({ set: false, masked: '' })
+const savingS2Key = ref(false)
+
+async function loadS2KeyStatus() {
+  try {
+    s2KeyStatus.value = await GetSemanticScholarKeyStatus()
+  } catch { /* ignore */ }
+}
 
 async function loadSettings() {
   try {
     const settings = await GetSettings()
     proxyURL.value = settings['proxy_url'] || ''
-    s2ApiKey.value = settings['semantic_scholar_api_key'] || ''
     // Absent = enabled by default.
     autoUpdateCheck.value = settings['auto_update_check'] !== 'false'
   } catch { /* ignore */ }
+  await loadS2KeyStatus()
 }
 
 async function saveS2ApiKey() {
+  const key = s2ApiKey.value.trim()
+  if (!key) return
+  savingS2Key.value = true
   try {
-    await SaveSetting('semantic_scholar_api_key', s2ApiKey.value.trim())
-    if (s2ApiKey.value.trim()) {
-      message.success(t('settings.s2ApiKeySaved'))
-    }
-  } catch { /* ignore */ }
+    await SetSemanticScholarKey(key)
+    s2ApiKey.value = ''
+    message.success(t('settings.s2ApiKeySaved'))
+  } catch (e: any) {
+    message.error(t('settings.s2ApiKeyFailed', { error: localizeBackendError(e, t) }))
+  } finally {
+    savingS2Key.value = false
+    await loadS2KeyStatus()
+  }
+}
+
+async function clearS2ApiKey() {
+  savingS2Key.value = true
+  try {
+    await SetSemanticScholarKey('')
+    s2ApiKey.value = ''
+    message.success(t('settings.s2ApiKeyCleared'))
+  } catch (e: any) {
+    message.error(t('settings.s2ApiKeyFailed', { error: localizeBackendError(e, t) }))
+  } finally {
+    savingS2Key.value = false
+    await loadS2KeyStatus()
+  }
 }
 
 async function saveProxy() {

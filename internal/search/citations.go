@@ -56,45 +56,6 @@ func ResolvePaperID(doi *string, arxivID *string, s2ID *string) string {
 	return ""
 }
 
-// FetchReferences fetches papers that a given paper references (its bibliography).
-func (f *CitationFetcher) FetchReferences(ctx context.Context, paperID string, limit int) ([]S2CitationEntry, error) {
-	return f.fetchCitations(ctx, paperID, "references", limit)
-}
-
-// FetchCitedBy fetches papers that cite the given paper.
-func (f *CitationFetcher) FetchCitedBy(ctx context.Context, paperID string, limit int) ([]S2CitationEntry, error) {
-	return f.fetchCitations(ctx, paperID, "citations", limit)
-}
-
-func (f *CitationFetcher) fetchCitations(ctx context.Context, paperID, direction string, limit int) ([]S2CitationEntry, error) {
-	fields := "title,year,authors,externalIds,citationCount"
-	u := fmt.Sprintf(
-		"https://api.semanticscholar.org/graph/v1/paper/%s/%s?fields=%s&limit=%d",
-		url.PathEscape(paperID), direction, fields, limit,
-	)
-
-	var resp s2CitationResponse
-	if err := f.client.DoJSONWithRetry(ctx, u, &resp, 2); err != nil {
-		return nil, err
-	}
-
-	entries := make([]S2CitationEntry, 0, len(resp.Data))
-	for _, item := range resp.Data {
-		var entry S2CitationEntry
-		if direction == "references" {
-			entry = item.CitedPaper
-		} else {
-			entry = item.CitingPaper
-		}
-		if entry.S2PaperID == "" || entry.Title == "" {
-			continue
-		}
-		entries = append(entries, entry)
-	}
-
-	return entries, nil
-}
-
 // ExtractAuthors extracts author names from S2CitationEntry.
 func ExtractAuthors(authors []s2Author) []string {
 	out := make([]string, 0, len(authors))
@@ -123,15 +84,6 @@ func (f *CitationFetcher) ResolveS2PaperID(ctx context.Context, lookupKey string
 		return "", err
 	}
 	return resp.PaperID, nil
-}
-
-type s2CitationResponse struct {
-	Data []s2CitationItem `json:"data"`
-}
-
-type s2CitationItem struct {
-	CitedPaper  S2CitationEntry `json:"citedPaper"`
-	CitingPaper S2CitationEntry `json:"citingPaper"`
 }
 
 // FetchPaperDetail fetches full metadata (title, abstract, year, venue,

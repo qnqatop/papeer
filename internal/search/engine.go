@@ -24,13 +24,13 @@ func httpStatusCode(err error) int {
 
 // SearchEvent is emitted during search to report progress.
 type SearchEvent struct {
-	Type       string `json:"type"`        // "query_start", "provider_done", "provider_error", "query_done", "axis_done", "done"
+	Type       string `json:"type"`        // "query_start", "provider_done", "provider_error", "query_done", "save_error", "axis_done", "done"
 	Axis       string `json:"axis"`        // axis name
 	Query      string `json:"query"`       // current query
 	Provider   string `json:"provider"`    // provider name
-	Count      int    `json:"count"`       // papers found (for provider_done)
+	Count      int    `json:"count"`       // papers found (provider_done) or not saved (save_error)
 	Total      int    `json:"total"`       // total deduped (for axis_done/done)
-	Error      string `json:"error"`       // error message (for provider_error)
+	Error      string `json:"error"`       // error message (provider_error, save_error)
 	DurationMs int64  `json:"duration_ms"` // provider/query duration in ms
 	RawCount   int    `json:"raw_count"`   // before dedup (for query_done/axis_done)
 }
@@ -70,9 +70,18 @@ type SearchAxisInput struct {
 	MaxPerQuery int
 }
 
+// SearchAxisResult reports what one SearchAxis run saved.
+type SearchAxisResult struct {
+	Saved       int     // papers inserted or merged into existing rows
+	NewPaperIDs []int64 // papers inserted by this run (not merges)
+	Failed      int     // papers that could not be saved (reported via save_error)
+}
+
 // SearchAxis runs all queries for a single axis across all providers, deduplicates,
-// scores, and upserts results. Returns the number of new/updated papers.
-func (e *Engine) SearchAxis(ctx context.Context, input SearchAxisInput) (int, error) {
+// scores, and upserts results in one transaction. A paper that fails to save is
+// skipped and reported with a "save_error" event; the error return is reserved
+// for failures that saved nothing.
+func (e *Engine) SearchAxis(ctx context.Context, input SearchAxisInput) (SearchAxisResult, error) {
 	var allRaw []RawPaper
 
 	// Language scope decides which providers run for this axis: "en" (default,
@@ -119,13 +128,13 @@ func (e *Engine) SearchAxis(ctx context.Context, input SearchAxisInput) (int, er
 	deduped := Dedupe(allRaw)
 
 	// Score and upsert.
-	upserted := 0
+	papers := make([]*db.Paper, 0, len(deduped))
 	for _, raw := range deduped {
 		sr := ScorePaper(raw, input.Keywords)
 
 		sources := strings.Split(raw.Source, ",")
 
-		paper := &db.Paper{
+		papers = append(papers, &db.Paper{
 			ProfileID:       input.ProfileID,
 			AxisID:          &input.Axis.ID,
 			Title:           raw.Title,
@@ -143,22 +152,45 @@ func (e *Engine) SearchAxis(ctx context.Context, input SearchAxisInput) (int, er
 			ScoreReasons:    sr.Reasons,
 			Sources:         sources,
 			Status:          "new",
-		}
+		})
+	}
 
-		if err := e.database.UpsertPaper(paper); err != nil {
-			return upserted, fmt.Errorf("upsert paper %q: %w", raw.Title, err)
+	var res SearchAxisResult
+	results, err := e.database.UpsertPapers(papers)
+	if err != nil {
+		return res, fmt.Errorf("save papers: %w", err)
+	}
+	var firstErr error
+	for i, r := range results {
+		if r.Err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("paper %q: %w", papers[i].Title, r.Err)
+			}
+			res.Failed++
+			continue
 		}
-		upserted++
+		res.Saved++
+		if r.Inserted {
+			res.NewPaperIDs = append(res.NewPaperIDs, r.ID)
+		}
+	}
+	if res.Failed > 0 {
+		e.onEvent(SearchEvent{
+			Type:  "save_error",
+			Axis:  input.Axis.AxisKey,
+			Count: res.Failed,
+			Error: firstErr.Error(),
+		})
 	}
 
 	e.onEvent(SearchEvent{
 		Type:     "axis_done",
 		Axis:     input.Axis.AxisKey,
-		Total:    upserted,
+		Total:    res.Saved,
 		RawCount: rawTotal,
 	})
 
-	return upserted, nil
+	return res, nil
 }
 
 // hasProviderForLang reports whether any configured provider serves lang.

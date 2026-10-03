@@ -43,6 +43,34 @@ func TestKeyringRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSecretRoundTrip(t *testing.T) {
+	keyring.MockInit()
+
+	if err := SetSecret("s2", "abc-secret"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	// Named secrets must not collide with numeric profile accounts.
+	if got, _ := GetKey(1); got != "" {
+		t.Errorf("profile key leaked from secret: %q", got)
+	}
+	got, err := GetSecret("s2")
+	if err != nil || got != "abc-secret" {
+		t.Fatalf("get = %q, %v", got, err)
+	}
+	if got, err := GetSecret("missing"); err != nil || got != "" {
+		t.Errorf("missing secret = %q, %v; want empty, nil", got, err)
+	}
+	if err := DeleteSecret("s2"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if got, _ := GetSecret("s2"); got != "" {
+		t.Errorf("expected empty after delete, got %q", got)
+	}
+	if err := DeleteSecret("s2"); err != nil {
+		t.Errorf("delete missing: %v", err)
+	}
+}
+
 func TestKeyringUnavailable(t *testing.T) {
 	keyring.MockInitWithError(keyring.ErrUnsupportedPlatform)
 

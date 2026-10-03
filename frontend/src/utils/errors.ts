@@ -20,6 +20,8 @@ const KNOWN_ANALYSIS_ERRORS: Array<[string, string]> = [
   ['review draft generation already in progress', 'v2.analysis.errors.reviewBusy'],
   ['no coverage gaps to export', 'v2.analysis.errors.noGapsToExport'],
   ['no recurring uncited works', 'v2.analysis.errors.noGapsToExport'],
+  // llm.ErrKeyringUnavailable (internal/llm/keyring.go)
+  ['OS keychain is unavailable', 'settings.keychainUnavailable'],
 ]
 
 export function localizeBackendError(e: unknown, t: ReturnType<typeof useI18n>['t']): string {
