@@ -6,12 +6,13 @@ package topics
 
 import (
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+
+	"github.com/qnqatop/papeer/internal/textproc"
 )
 
 // Document is one paper's text to cluster (caller combines title+abstract).
@@ -39,8 +40,6 @@ const (
 	MaxK = 15
 )
 
-var tokenRe = regexp.MustCompile(`[a-zA-Zа-яА-ЯёЁ]+`)
-
 // Cluster computes TF-IDF vectors for docs and groups them with spherical
 // K-Means (cosine similarity). k<=0 auto-selects a cluster count in
 // [MinK, MaxK] based on corpus size (fewer for small corpora, so a 20-paper
@@ -54,9 +53,10 @@ func Cluster(docs []Document, k int) ([]Topic, error) {
 		return nil, nil
 	}
 
+	surfaces := make(surfaceIndex)
 	tokenized := make([][]string, len(docs))
 	for i, d := range docs {
-		tokenized[i] = tokenize(d.Text)
+		tokenized[i] = tokenize(d.Text, surfaces)
 	}
 
 	vocab, df := buildVocab(tokenized)
@@ -81,7 +81,7 @@ func Cluster(docs []Document, k int) ([]Topic, error) {
 	k = chooseK(k, len(docs))
 	assign, centroids := kmeans(vectors, len(vocab), k, 42)
 
-	topics := buildTopics(assign, centroids, docs, vocab, k)
+	topics := buildTopics(assign, centroids, docs, vocab, k, surfaces)
 	layoutCentroids(topics, centroids)
 	return topics, nil
 }
@@ -118,26 +118,62 @@ func chooseK(k, n int) int {
 	return k
 }
 
-// tokenize lowercases, extracts alphabetic runs, and drops stopwords/short
-// tokens. Also emits bigrams of consecutive surviving tokens so clusters can
-// surface more specific phrases ("attention mechanism") instead of only
-// generic unigrams.
-func tokenize(text string) []string {
-	raw := tokenRe.FindAllString(strings.ToLower(text), -1)
-	words := make([]string, 0, len(raw))
-	for _, w := range raw {
-		if len(w) < 3 || stopwords[w] {
-			continue
-		}
-		words = append(words, w)
+// tokenize turns text into clustering terms: the stems of its words (see
+// textproc.Tokenize: stopwords dropped, Russian and English stemmed, so
+// inflected forms count as one term) plus bigrams of consecutive surviving
+// stems, so clusters can surface more specific phrases ("attention
+// mechanism") instead of only generic unigrams. A bigram term is the two
+// stems joined by a single space.
+//
+// When surfaces is non-nil, every emitted term is also recorded with the
+// surface form it came from, so labels can later be shown as real words.
+func tokenize(text string, surfaces surfaceIndex) []string {
+	toks := textproc.Tokenize(text)
+	out := make([]string, 0, len(toks)*2)
+	for _, t := range toks {
+		out = append(out, t.Stem)
+		surfaces.add(t.Stem, t.Surface)
 	}
-
-	out := make([]string, 0, len(words)*2)
-	out = append(out, words...)
-	for i := 0; i+1 < len(words); i++ {
-		out = append(out, words[i]+" "+words[i+1])
+	for i := 0; i+1 < len(toks); i++ {
+		term := toks[i].Stem + " " + toks[i+1].Stem
+		out = append(out, term)
+		surfaces.add(term, toks[i].Surface+" "+toks[i+1].Surface)
 	}
 	return out
+}
+
+// surfaceIndex counts, per term (stem or "stem stem" bigram), how often each
+// surface form produced it across the corpus. Stems are not human-readable
+// ("нейрон", "entangl"), so topic labels and top terms are displayed as the
+// most frequent surface form of each term instead.
+type surfaceIndex map[string]map[string]int
+
+func (s surfaceIndex) add(term, surface string) {
+	if s == nil {
+		return
+	}
+	forms := s[term]
+	if forms == nil {
+		forms = make(map[string]int, 1)
+		s[term] = forms
+	}
+	forms[surface]++
+}
+
+// display returns the most frequent surface form of term, breaking ties by
+// the lexicographically smallest form so the choice is deterministic. Terms
+// that were never recorded are returned unchanged.
+func (s surfaceIndex) display(term string) string {
+	best, bestN := "", 0
+	for form, n := range s[term] {
+		if n > bestN || (n == bestN && form < best) {
+			best, bestN = form, n
+		}
+	}
+	if bestN == 0 {
+		return term
+	}
+	return best
 }
 
 // buildVocab collects terms that appear in at least 2 documents and at most
@@ -200,8 +236,9 @@ func tfidfVector(tokens []string, termIndex map[string]int, idf []float64) map[i
 }
 
 // buildTopics assigns papers/top-terms to clusters and derives a label from
-// each centroid's highest-weighted terms.
-func buildTopics(assign []int, centroids []map[int]float64, docs []Document, vocab []string, k int) []Topic {
+// each centroid's highest-weighted terms. Terms are picked on stems and then
+// translated to their most frequent surface forms for display.
+func buildTopics(assign []int, centroids []map[int]float64, docs []Document, vocab []string, k int, surfaces surfaceIndex) []Topic {
 	topics := make([]Topic, k)
 	for i := range topics {
 		topics[i] = Topic{ID: i}
@@ -211,7 +248,11 @@ func buildTopics(assign []int, centroids []map[int]float64, docs []Document, voc
 	}
 	for i := range topics {
 		topics[i].Size = len(topics[i].PaperIDs)
-		topics[i].TopTerms = topTerms(centroids[i], vocab, 6)
+		terms := topTerms(centroids[i], vocab, 6)
+		for j, term := range terms {
+			terms[j] = surfaces.display(term)
+		}
+		topics[i].TopTerms = terms
 		topics[i].Label = makeLabel(topics[i].TopTerms)
 	}
 	return topics

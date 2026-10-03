@@ -6,6 +6,7 @@ require (
 	github.com/bbalet/stopwords v1.0.0
 	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
 	github.com/chromedp/chromedp v0.15.1
+	github.com/kljensen/snowball v0.10.0
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/openai/openai-go/v3 v3.44.0
 	github.com/wailsapp/wails/v2 v2.12.0
