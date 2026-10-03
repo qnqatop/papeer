@@ -1,6 +1,6 @@
-import { ref, getCurrentInstance, onUnmounted } from 'vue'
+import { ref } from 'vue'
 import { CheckForUpdates, DownloadUpdate, InstallAndRestart } from '../../wailsjs/go/app/App'
-import { EventsOn } from '../../wailsjs/runtime/runtime'
+import { useWailsEvent } from './useWailsEvent'
 
 export type UpdateStatus = 'idle' | 'up-to-date' | 'available' | 'restarting'
 
@@ -18,14 +18,11 @@ export function useUpdater() {
   const isUpdateReady = ref(false)
   const updateError = ref('')
 
-  const unlisten = EventsOn('update:download-progress', (data: { percentage?: number }) => {
+  // Unsubscribed on unmount when used inside a component; also callable
+  // from unit tests without an active instance.
+  useWailsEvent('update:download-progress', (data: { percentage?: number }) => {
     downloadPercentage.value = Math.round(data?.percentage ?? 0)
   })
-  // Only register the lifecycle hook inside a component; this keeps the
-  // composable callable from unit tests without an active instance.
-  if (getCurrentInstance()) {
-    onUnmounted(() => unlisten?.())
-  }
 
   async function checkUpdates() {
     updateError.value = ''

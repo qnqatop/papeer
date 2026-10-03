@@ -38,6 +38,7 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { localizeBackendError } from '../utils/errors'
 import {
   NModal, NForm, NFormItem, NInput, NInputNumber,
   NInputGroup, NButton, NSpace, NTooltip, NIcon,
@@ -117,7 +118,7 @@ async function pickDir() {
     const dir = await profileStore.selectPdfDir()
     if (dir) form.pdf_dir = dir
   } catch (e: any) {
-    message.error(e.message || t('profiles.selectDirFailed'))
+    message.error(localizeBackendError(e, t) || t('profiles.selectDirFailed'))
   }
 }
 
@@ -142,7 +143,7 @@ async function saveProfile() {
     }
     visible.value = false
   } catch (e: any) {
-    message.error(e.message || t('profiles.saveFailed'))
+    message.error(localizeBackendError(e, t) || t('profiles.saveFailed'))
   } finally {
     saving.value = false
   }

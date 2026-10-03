@@ -111,7 +111,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, computed, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
@@ -120,7 +120,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import { GenerateReviewDraft, GetDownloadedPapers, CancelOperation, SaveExportFile } from '../../wailsjs/go/app/App'
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { useWailsEvent } from '../composables/useWailsEvent'
 import { app, db } from '../../wailsjs/go/models'
 import { useProfileStore } from '../stores/profile'
 import { useLLMProfilesStore } from '../stores/llmProfiles'
@@ -203,9 +203,12 @@ function onReviewDone(data: any) {
   markdown.value = data?.markdown ?? ''
 }
 
+// Scoped subscriptions: removed on unmount without touching the global
+// progress store's listeners for the same events.
+useWailsEvent('review:progress', onReviewProgress)
+useWailsEvent('review:done', onReviewDone)
+
 onMounted(() => {
-  EventsOn('review:progress', onReviewProgress)
-  EventsOn('review:done', onReviewDone)
   if (llmStore.activeProfile) {
     selectedModel.value = llmStore.activeProfile.default_model || null
   }
@@ -214,11 +217,6 @@ onMounted(() => {
       downloadedPapers.value = papers || []
     }).catch(() => {})
   }
-})
-
-onUnmounted(() => {
-  // NOTE: do NOT call EventsOff here — Wails removes ALL callbacks for
-  // the event, which would kill the global progress store listener.
 })
 </script>
 

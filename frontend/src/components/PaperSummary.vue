@@ -116,6 +116,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { localizeBackendError } from '../utils/errors'
 import { useRouter } from 'vue-router'
 import {
   NCard, NSpin, NText, NSpace, NButton, NSelect, NTabs, NTabPane, NAlert,
@@ -204,7 +205,7 @@ async function generate() {
   try {
     await store.generate(props.paperID, model)
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   }
 }
 
@@ -216,7 +217,7 @@ async function generateFromMissing() {
   try {
     await store.generate(props.paperID, model)
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   }
 }
 
@@ -231,7 +232,7 @@ function handleRegenerate(s: db.Summary) {
         await store.regenerate(props.paperID, s.model)
         message.success(t('papers.summary.regenerated'))
       } catch (e: any) {
-        message.error(e?.message || String(e))
+        message.error(localizeBackendError(e, t))
       }
     },
   })
@@ -248,7 +249,7 @@ function handleDelete(s: db.Summary) {
         await store.remove(s.id, props.paperID)
         message.success(t('papers.summary.deleted'))
       } catch (e: any) {
-        message.error(e?.message || String(e))
+        message.error(localizeBackendError(e, t))
       }
     },
   })

@@ -221,7 +221,12 @@
       "backgroundTasks": "Фоновые задачи",
       "noTasks": "Нет активных задач",
       "downloadComplete": "Загрузка завершена",
-      "draftingReview": "Генерация черновика обзора..."
+      "draftingReview": "Генерация черновика обзора...",
+      "failedDownloads": "Не скачано",
+      "retry": "Повторить",
+      "dismiss": "Скрыть",
+      "radarRuns": "Радар",
+      "radarRunLine": "{time}: новых — {count}"
     },
     "welcome": {
       "title": "У вас пока нет исследований",
@@ -378,7 +383,16 @@
     "confirmTitle": "Подтверждение скачивания",
     "confirmMessage": "Скачать {count} одобренных статей в",
     "startDownload": "Начать скачивание",
-    "noApproved": "Нет одобренных статей для скачивания"
+    "noApproved": "Нет одобренных статей для скачивания",
+    "failReason": {
+      "blocked": "Заблокировано издательством (капча / защита)",
+      "rateLimited": "Лимит запросов источника — повторите позже",
+      "invalidPdf": "Вместо PDF получена страница",
+      "noSource": "Открытая PDF-версия не найдена",
+      "other": "Не удалось скачать"
+    },
+    "retryStarted": "Повторяем скачивание…",
+    "autoDownloadFailed": "Статус сохранён, но скачивание PDF не запустилось: {error}"
   },
   "stats": {
     "allAxes": "Все темы",
@@ -420,6 +434,12 @@
       "saved": "Инструкция сохранена",
       "reset": "Сбросить по умолчанию",
       "resetConfirm": "Сбросить инструкцию к стандартной?"
+    },
+    "theme": {
+      "label": "Тема",
+      "auto": "Как в системе",
+      "light": "Светлая",
+      "dark": "Тёмная"
     }
   },
   "llm": {
@@ -712,5 +732,48 @@
       "available": "Доступна новая версия {version}",
       "action": "Обновить"
     }
+  },
+  "progress": {
+    "providerDone": "{provider}: статей — {count}",
+    "searching": "Поиск: «{query}»",
+    "axisDone": "Ось готова: статей — {count}",
+    "providerError": "{provider}: ошибка",
+    "saveError": "{axis}: не сохранено статей — {count}",
+    "searchComplete": "Поиск завершён: статей — {count}",
+    "searchCompleteToast": "Поиск завершён: найдено статей — {count}",
+    "searchError": "Ошибка: {axis}: {error}",
+    "downloadTrying": "[{current}/{total}] Пробуем {source}...",
+    "downloadDone": "[{current}/{total}] Скачано через {source}",
+    "downloadFailed": "[{current}/{total}] Ошибка: {error}",
+    "downloadComplete": "Скачивание завершено",
+    "downloadCompleteToast": "Скачивание завершено: скачано {done}, не удалось {failed}"
+  },
+  "errors": {
+    "pdfDirNotConfigured": "Для профиля не задана папка PDF — выберите её в настройках профиля.",
+    "noFailedDownloads": "Нет неудачных скачиваний для повтора.",
+    "noDownloadedPdfs": "Пока нет скачанных статей с PDF.",
+    "noPdf": "PDF этой статьи ещё не скачан.",
+    "pdfFileMissing": "Файл PDF не найден на диске — скачайте его заново.",
+    "pdfUnavailable": "Хранилище PDF ещё не готово. Попробуйте чуть позже.",
+    "chromeNotFound": "Chrome/Chromium не найден — установите его для скачивания с защищённых сайтов издательств.",
+    "noValidPapers": "Ни одна из выбранных статей не найдена.",
+    "invalidProxy": "Некорректный адрес прокси. Используйте формат http://host:port или socks5://host:port.",
+    "unknownSetting": "Эту настройку нельзя изменить.",
+    "updaterUnavailable": "Обновление недоступно в этой сборке.",
+    "summaryBusy": "Резюме для этой статьи и модели уже генерируется.",
+    "summaryExists": "Резюме уже существует — используйте «Перегенерировать».",
+    "noLlmKey": "У активного LLM-профиля нет API-ключа. Добавьте его в Настройки → LLM.",
+    "noActiveLlmProfile": "Нет активного LLM-профиля. Добавьте его в Настройки → LLM и сделайте активным.",
+    "modelNotInProfile": "Выбранная модель не входит в активный LLM-профиль.",
+    "noModel": "Для LLM-профиля не выбрана модель.",
+    "insecureLlmUrl": "Базовый URL LLM должен использовать https (http допустим только для localhost).",
+    "llmKeyReentry": "Хост базового URL LLM изменился — введите API-ключ заново.",
+    "invalidLlmUrl": "Некорректный базовый URL LLM.",
+    "yamlTooLarge": "YAML-файл слишком большой.",
+    "noAxesToExport": "Нет осей для экспорта.",
+    "blockedDestination": "Запрос заблокирован: адрес ведёт в локальную или частную сеть.",
+    "bodyTooLarge": "Ответ сервера слишком большой.",
+    "timeout": "Превышено время ожидания. Проверьте подключение или прокси и повторите.",
+    "network": "Сетевая ошибка: сервер недоступен. Проверьте подключение или прокси."
   }
 }

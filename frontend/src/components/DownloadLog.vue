@@ -182,7 +182,7 @@ watch(() => paperCards.value.length, async () => {
   margin-bottom: 6px;
   border-radius: 6px;
   border-left: 3px solid transparent;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface-hover);
   font-size: 12px;
   line-height: 1.45;
 }

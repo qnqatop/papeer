@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isInvalidEmailError, localizeBackendError } from '../utils/errors'
+import { isInvalidEmailError, localizeBackendError, downloadFailReason } from '../utils/errors'
 
 // localizeBackendError takes vue-i18n's `t` function; a plain passthrough
 // stub is enough to verify which key/marker was matched without pulling in
@@ -59,5 +59,45 @@ describe('localizeBackendError', () => {
 
   it('stringifies non-Error values with no message property', () => {
     expect(localizeBackendError('plain string error', t)).toBe('plain string error')
+  })
+})
+
+describe('localizeBackendError: general backend markers', () => {
+  const cases: Array<[string, string]> = [
+    ['PDF directory not configured for profile "Demo"', 'errors.pdfDirNotConfigured'],
+    ['invalid proxy URL: parse "::": missing protocol scheme', 'errors.invalidProxy'],
+    ['unknown setting "foo"', 'errors.unknownSetting'],
+    ['OS keychain is unavailable; the API key was not saved — enter it again later', 'settings.keychainUnavailable'],
+    ['summary already exists, use RegenerateSummary', 'errors.summaryExists'],
+    ['no active LLM profile; add one in Settings and make it active', 'errors.noActiveLlmProfile'],
+    ['invalid LLM base URL "http://x": scheme must be https', 'errors.insecureLlmUrl'],
+    ['Get "https://api.x": context deadline exceeded', 'errors.timeout'],
+    ['dial tcp: lookup api.x: no such host', 'errors.network'],
+  ]
+  for (const [raw, key] of cases) {
+    it(`maps "${raw}"`, () => {
+      // Wails rejects with plain strings, not Error objects.
+      expect(localizeBackendError(raw, t)).toBe(key)
+      expect(localizeBackendError(new Error(raw), t)).toBe(key)
+    })
+  }
+
+  it('returns the raw message for unknown errors', () => {
+    expect(localizeBackendError('something odd', t)).toBe('something odd')
+    expect(localizeBackendError(new Error('boom'), t)).toBe('boom')
+  })
+})
+
+describe('downloadFailReason', () => {
+  it('classifies aggregated engine errors into short reasons', () => {
+    expect(downloadFailReason('all sources exhausted: arxiv: no arxiv id; openalex: no OA location', t)).toBe('download.failReason.noSource')
+    expect(downloadFailReason('all sources exhausted: publisher: captcha required', t)).toBe('download.failReason.blocked')
+    expect(downloadFailReason('all sources exhausted: s2: HTTP 429', t)).toBe('download.failReason.rateLimited')
+    expect(downloadFailReason('PDF validation failed for https://x: not a PDF', t)).toBe('download.failReason.invalidPdf')
+    expect(downloadFailReason('weird', t)).toBe('download.failReason.other')
+  })
+
+  it('prefers known backend markers', () => {
+    expect(downloadFailReason('PDF directory not configured for profile "X"', t)).toBe('errors.pdfDirNotConfigured')
   })
 })

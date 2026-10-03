@@ -8,10 +8,12 @@ vi.mock('../../wailsjs/runtime/runtime', () => ({
 }))
 
 import { useProgressStore, MAX_PROGRESS_EVENTS } from '../stores/progress'
+import { setLocale } from '../i18n'
 
 describe('progress store event caps', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    setLocale('en')
   })
 
   it('keeps only the latest search events', () => {

@@ -113,7 +113,7 @@
           <n-card style="flex: 1; overflow: hidden" content-style="padding: 0; height: 100%">
             <div style="position: relative; width: 100%; height: 100%">
               <v-network-graph
-                :key="layoutMode + ':' + graphData!.nodes.length"
+                :key="layoutMode + ':' + resolvedThemeMode + ':' + graphData!.nodes.length"
                 ref="graphRef"
                 :nodes="vngNodes"
                 :edges="vngEdges"
@@ -178,7 +178,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
+import { ref, computed, onMounted, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
@@ -195,7 +195,8 @@ import {
   ClearCitationData,
   CancelOperation,
 } from '../../wailsjs/go/app/App'
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { useWailsEvent } from '../composables/useWailsEvent'
+import { resolvedThemeMode } from '../theme/mode'
 import { useProfileStore } from '../stores/profile'
 import type { app } from '../../wailsjs/go/models'
 import { isInvalidEmailError, localizeBackendError } from '../utils/errors'
@@ -311,7 +312,13 @@ function getNodeStrokeDasharray(nodeId: string): string | undefined {
 // created with the new force set — the layout handler itself isn't reactive
 // mid-simulation. This is a pragmatic approximation, not a true multi-row
 // timeline layout: nodes without a year fall back to a middle band.
-const vngConfigs = defineConfigs({
+// Label/edge colors are passed to the SVG as concrete values, so they follow
+// the theme by rebuilding the configs (the graph is keyed on the mode).
+const graphPalette = computed(() => resolvedThemeMode.value === 'light'
+  ? { label: '#475569', edge: 'rgba(71, 85, 105, 0.25)' }
+  : { label: '#94a3b8', edge: 'rgba(148, 163, 184, 0.15)' })
+
+const vngConfigs = computed(() => defineConfigs({
   view: {
     scalingObjects: true,
     minZoomLevel: 0.2,
@@ -362,14 +369,14 @@ const vngConfigs = defineConfigs({
     label: {
       visible: true,
       fontSize: 11,
-      color: '#94a3b8',
+      color: graphPalette.value.label,
       directionAutoAdjustment: true,
       margin: 4,
     },
   },
   edge: {
     normal: {
-      color: 'rgba(148, 163, 184, 0.15)',
+      color: graphPalette.value.edge,
       width: 1,
     },
     marker: {
@@ -380,7 +387,7 @@ const vngConfigs = defineConfigs({
       },
     },
   },
-})
+}))
 
 const vngLayouts = ref({})
 
@@ -504,15 +511,11 @@ async function exportPNG(): Promise<string | null> {
 
 defineExpose({ exportPNG })
 
-onMounted(() => {
-  EventsOn('citation:progress', onCitationProgress)
-  EventsOn('citation:done', onCitationDone)
-  loadGraph()
-})
+useWailsEvent('citation:progress', onCitationProgress)
+useWailsEvent('citation:done', onCitationDone)
 
-onUnmounted(() => {
-  EventsOff('citation:progress')
-  EventsOff('citation:done')
+onMounted(() => {
+  loadGraph()
 })
 </script>
 

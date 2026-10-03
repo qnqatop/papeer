@@ -74,6 +74,15 @@
               />
             </div>
             <div>
+              <n-text strong>{{ t('settings.theme.label') }}</n-text>
+              <n-select
+                :value="themePreference"
+                :options="themeOptions"
+                style="max-width: 200px; margin-top: 4px"
+                @update:value="setThemePreference"
+              />
+            </div>
+            <div>
               <n-text strong>{{ t('settings.onboarding') }}</n-text>
               <div style="margin-top: 4px">
                 <n-button @click="restartTour">
@@ -402,6 +411,7 @@ import { useProgressStore } from '../stores/progress'
 import { useLLMProfilesStore } from '../stores/llmProfiles'
 import { setLocale, getLocale } from '../i18n'
 import { isInvalidEmailError, localizeBackendError } from '../utils/errors'
+import { themePreference, setThemePreference } from '../theme/mode'
 import {
   GetSettings, SaveSetting, TestProxy,
   ListTags, CreateTag as CreateTagAPI, DeleteTag as DeleteTagAPI,
@@ -452,7 +462,7 @@ async function deleteProfile(p: db.Profile) {
     await profileStore.fetchProfiles()
     message.success(t('profiles.deleted'))
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -470,6 +480,12 @@ const currentLocale = ref(getLocale())
 const localeOptions = computed(() => [
   { label: t('lang.en'), value: 'en' },
   { label: t('lang.ru'), value: 'ru' },
+])
+
+const themeOptions = computed(() => [
+  { label: t('settings.theme.auto'), value: 'auto' },
+  { label: t('settings.theme.light'), value: 'light' },
+  { label: t('settings.theme.dark'), value: 'dark' },
 ])
 
 function switchLocale(value: string) {
@@ -554,7 +570,7 @@ async function testProxy() {
     await TestProxy(proxyURL.value.trim())
     message.success(t('settings.proxyOk'))
   } catch (e: any) {
-    message.error(t('settings.proxyFailed', { error: e }))
+    message.error(t('settings.proxyFailed', { error: localizeBackendError(e, t) }))
   } finally {
     testingProxy.value = false
   }
@@ -577,7 +593,7 @@ async function checkProviders() {
       message.warning(t('settings.checkProvidersPartial', { ok: okCount, total }))
     }
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   } finally {
     checkingProviders.value = false
   }
@@ -610,7 +626,7 @@ async function createTag() {
     message.success(t('tags.created'))
     await fetchTags()
   } catch (e: any) {
-    message.error(t('tags.createFailed', { error: e }))
+    message.error(t('tags.createFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -620,7 +636,7 @@ async function deleteTag(tag: db.Tag) {
     message.success(t('tags.deleted'))
     await fetchTags()
   } catch (e: any) {
-    message.error(t('tags.deleteFailed', { error: e }))
+    message.error(t('tags.deleteFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -672,7 +688,7 @@ async function runRadarNow() {
     else { message.info(t('monitoring.foundNone')) }
   } catch (e: any) {
     if (isInvalidEmailError(e)) message.error(t('profiles.emailMissingForOps'))
-    else message.error(t('papers.failed', { error: e }))
+    else message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
     progressStore.radarRunning = false
   }
 }
@@ -701,7 +717,7 @@ async function setActiveProfile(p: app.LLMProfileView) {
     await llmStore.setActive(p.id)
     message.success(t('llm.activated', { name: p.name }))
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   }
 }
 
@@ -710,7 +726,7 @@ async function deleteLLMProfile(p: app.LLMProfileView) {
     await llmStore.remove(p.id)
     message.success(t('llm.deleted'))
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   }
 }
 
@@ -720,7 +736,7 @@ async function testProfile(p: app.LLMProfileView) {
     await llmStore.test(p.id)
     message.success(t('llm.testOk'))
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   } finally {
     testingId.value = null
   }
@@ -790,7 +806,7 @@ async function checkUpdates() {
       message.success(t('updates.upToDate'))
     }
   } catch (e: any) {
-    updateError.value = t('updates.checkFailed', { error: e?.message || String(e) })
+    updateError.value = t('updates.checkFailed', { error: localizeBackendError(e, t) })
   }
 }
 
@@ -798,13 +814,13 @@ async function downloadUpdate() {
   try {
     await runDownloadUpdate()
   } catch (e: any) {
-    updateError.value = t('updates.downloadFailed', { error: e?.message || String(e) })
+    updateError.value = t('updates.downloadFailed', { error: localizeBackendError(e, t) })
   }
 }
 
 function installUpdate() {
   runInstallUpdate().catch((e: any) => {
-    updateError.value = t('updates.installFailed', { error: e?.message || String(e) })
+    updateError.value = t('updates.installFailed', { error: localizeBackendError(e, t) })
   })
 }
 

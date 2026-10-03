@@ -78,6 +78,7 @@
 <script setup lang="ts">
 import { reactive, ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { localizeBackendError } from '../utils/errors'
 import {
   NModal, NForm, NFormItem, NInput, NSelect, NSlider, NDynamicTags,
   NCheckbox, NButton, NSpace, NText, NSpin, NIcon,
@@ -167,7 +168,7 @@ async function testConnection() {
     testMessage.value = t('llm.testOk')
   } catch (e: any) {
     testState.value = 'error'
-    testMessage.value = e?.message || String(e)
+    testMessage.value = localizeBackendError(e, t)
   }
 }
 
@@ -198,7 +199,7 @@ async function save() {
     emit('saved')
     visible.value = false
   } catch (e: any) {
-    message.error(e?.message || String(e))
+    message.error(localizeBackendError(e, t))
   } finally {
     saving.value = false
   }

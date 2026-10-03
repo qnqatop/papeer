@@ -87,13 +87,15 @@ import {
   SearchOutline,
   DocumentTextOutline,
   StatsChartOutline,
+  SettingsOutline,
 } from '@vicons/ionicons5'
+import { sidebarKeys, type SidebarKey } from './utils/navigation'
 import { useProfileStore } from './stores/profile'
 import { useProgressStore } from './stores/progress'
 import { usePapersStore } from './stores/papers'
 import { useOnboardingStore } from './stores/onboarding'
 import { DeleteProfile, ProfilesNeedingEmail } from '../wailsjs/go/app/App'
-import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime'
+import { useWailsEvent } from './composables/useWailsEvent'
 import { db } from '../wailsjs/go/models'
 import AppHeader from './components/layout/AppHeader.vue'
 import UpdateBanner from './components/layout/UpdateBanner.vue'
@@ -140,6 +142,23 @@ watch(
   { immediate: false },
 )
 
+// Radar: listen for new paper notifications.
+useWailsEvent('radar:done', (data: any) => {
+  const count = data?.new_papers || 0
+  if (count > 0) {
+    radarNewCount.value += count
+    message.success(t('monitoring.foundNew', { count }))
+  }
+})
+
+// If any existing profile lacks a valid email, force the user to fix it.
+useWailsEvent('profile:needs_email', (p: db.Profile) => {
+  if (!needsEmailProfile.value && !showDemoProfileModal.value && !showWelcomeProfileModal.value) {
+    needsEmailProfile.value = p
+    showNeedsEmailModal.value = true
+  }
+})
+
 onMounted(async () => {
   await profileStore.fetchProfiles()
 
@@ -156,23 +175,6 @@ onMounted(async () => {
   progressStore.setOnDownloadDone(() => {
     if (papersStore.filter.profile_id) {
       papersStore.fetchPapers()
-    }
-  })
-
-  // Radar: listen for new paper notifications.
-  EventsOn('radar:done', (data: any) => {
-    const count = data?.new_papers || 0
-    if (count > 0) {
-      radarNewCount.value += count
-      message.success(t('monitoring.foundNew', { count }))
-    }
-  })
-
-  // If any existing profile lacks a valid email, force the user to fix it.
-  EventsOn('profile:needs_email', (p: db.Profile) => {
-    if (!needsEmailProfile.value && !showDemoProfileModal.value && !showWelcomeProfileModal.value) {
-      needsEmailProfile.value = p
-      showNeedsEmailModal.value = true
     }
   })
 
@@ -197,7 +199,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  EventsOff('radar:done', 'profile:needs_email')
   progressStore.stopListening()
 })
 
@@ -292,16 +293,16 @@ function renderIcon(icon: any) {
 
 const menuOptions = computed<MenuOption[]>(() => {
   // Hide all menu items when no profiles exist — user must create one first.
-  if (profileStore.profiles.length === 0) return []
-
-  return [
-    { label: t('nav.search'), key: 'search', icon: renderIcon(SearchOutline) },
-    { label: () => h('span', { style: 'display:flex;align-items:center;gap:6px' }, [
+  const items: Record<SidebarKey, MenuOption> = {
+    search: { label: t('nav.search'), key: 'search', icon: renderIcon(SearchOutline) },
+    papers: { label: () => h('span', { style: 'display:flex;align-items:center;gap:6px' }, [
       t('nav.papers'),
       radarNewCount.value > 0 ? h(NBadge, { value: radarNewCount.value, type: 'error' }) : null,
     ]), key: 'papers', icon: renderIcon(DocumentTextOutline) },
-    { label: t('nav.analysis'), key: 'analysis', icon: renderIcon(StatsChartOutline) },
-  ]
+    analysis: { label: t('nav.analysis'), key: 'analysis', icon: renderIcon(StatsChartOutline) },
+    settings: { label: t('nav.settings'), key: 'settings', icon: renderIcon(SettingsOutline) },
+  }
+  return sidebarKeys(profileStore.profiles).map(k => items[k])
 })
 
 function handleMenuClick(key: string) {

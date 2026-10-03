@@ -300,7 +300,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { isInvalidEmailError } from '../utils/errors'
+import { isInvalidEmailError, localizeBackendError } from '../utils/errors'
 import { useOnboardingPhase } from '../composables/useOnboarding'
 import { useOnboardingStore } from '../stores/onboarding'
 import {
@@ -427,7 +427,7 @@ async function exportAxis(id: number) {
   try {
     await ExportAxisYAML(id)
   } catch (e: any) {
-    message.error(t('axes.exportYamlFailed', { error: e }))
+    message.error(t('axes.exportYamlFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -437,7 +437,7 @@ async function exportAllAxes() {
   try {
     await ExportAllAxesYAML(pid)
   } catch (e: any) {
-    message.error(t('axes.exportYamlFailed', { error: e }))
+    message.error(t('axes.exportYamlFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -457,7 +457,7 @@ async function fetchAxes() {
     axes.value = axList || []
     paperCounts.value = counts || {}
   } catch (e: any) {
-    message.error(t('axes.loadFailed', { error: e }))
+    message.error(t('axes.loadFailed', { error: localizeBackendError(e, t) }))
   } finally {
     loading.value = false
   }
@@ -481,7 +481,7 @@ async function addAxis() {
     const saved = await SaveAxis(newAxis)
     axes.value.push(saved)
   } catch (e: any) {
-    message.error(t('axes.createFailed', { error: e }))
+    message.error(t('axes.createFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -495,7 +495,7 @@ async function saveAxis(axis: db.Axis) {
     }
     message.success(t('axes.saved'))
   } catch (e: any) {
-    message.error(t('axes.saveFailed', { error: e }))
+    message.error(t('axes.saveFailed', { error: localizeBackendError(e, t) }))
   } finally {
     savingAxisId.value = null
   }
@@ -507,7 +507,7 @@ async function removeAxis(id: number) {
     axes.value = axes.value.filter(a => a.id !== id)
     message.success(t('axes.deleted'))
   } catch (e: any) {
-    message.error(t('axes.deleteFailed', { error: e }))
+    message.error(t('axes.deleteFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -575,7 +575,7 @@ async function searchOne(axis: db.Axis) {
     await refreshCounts()
   } catch (e: any) {
     if (isInvalidEmailError(e)) message.error(t('profiles.emailMissingForOps'))
-    else message.error(t('axes.searchFailed', { error: e }))
+    else message.error(t('axes.searchFailed', { error: localizeBackendError(e, t) }))
   } finally {
     progressStore.searching = false
     searchingAxisId.value = null
@@ -602,7 +602,7 @@ async function searchAll() {
     }
   } catch (e: any) {
     if (isInvalidEmailError(e)) message.error(t('profiles.emailMissingForOps'))
-    else message.error(t('axes.searchFailed', { error: e }))
+    else message.error(t('axes.searchFailed', { error: localizeBackendError(e, t) }))
   } finally {
     progressStore.searching = false
   }
@@ -622,7 +622,7 @@ async function cancelSearch() {
   try {
     await CancelOperation()
   } catch (e: any) {
-    message.error(t('axes.cancelFailed', { error: e }))
+    message.error(t('axes.cancelFailed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -646,7 +646,7 @@ async function importYaml() {
       await fetchAxes()
     }
   } catch (e: any) {
-    message.error(t('axes.importFailed', { error: e }))
+    message.error(t('axes.importFailed', { error: localizeBackendError(e, t) }))
   }
 }
 

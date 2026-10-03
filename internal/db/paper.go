@@ -282,17 +282,17 @@ const maxListLimit = 10000
 // likeEscaper escapes LIKE metacharacters for use with ESCAPE '\'.
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
-func (d *DB) ListPapers(f PaperFilter) ([]Paper, int, error) {
+// paperFilterWhere builds the WHERE clause (without the keyword) and its
+// arguments for every PaperFilter condition except status, sorting and
+// paging. ListPapers and CountPapersByStatus share it so the status-tab
+// counters always match the list.
+func paperFilterWhere(f PaperFilter) (string, []interface{}) {
 	where := []string{"profile_id=?"}
 	args := []interface{}{f.ProfileID}
 
 	if f.AxisID != nil {
 		where = append(where, "axis_id=?")
 		args = append(args, *f.AxisID)
-	}
-	if f.Status != "" {
-		where = append(where, "status=?")
-		args = append(args, f.Status)
 	}
 	if f.MinScore > 0 {
 		where = append(where, "pre_score>=?")
@@ -333,7 +333,15 @@ func (d *DB) ListPapers(f PaperFilter) ([]Paper, int, error) {
 		args = append(args, tagArgs...)
 	}
 
-	whereClause := strings.Join(where, " AND ")
+	return strings.Join(where, " AND "), args
+}
+
+func (d *DB) ListPapers(f PaperFilter) ([]Paper, int, error) {
+	whereClause, args := paperFilterWhere(f)
+	if f.Status != "" {
+		whereClause += " AND status=?"
+		args = append(args, f.Status)
+	}
 
 	// Count total.
 	var total int
@@ -390,6 +398,29 @@ func (d *DB) ListPapers(f PaperFilter) ([]Paper, int, error) {
 	}
 
 	return out, total, nil
+}
+
+// CountPapersByStatus returns the number of papers per triage status that
+// match f, ignoring f.Status, sorting and paging. Statuses with no papers are
+// absent from the map.
+func (d *DB) CountPapersByStatus(f PaperFilter) (map[string]int, error) {
+	whereClause, args := paperFilterWhere(f)
+	rows, err := d.Query("SELECT status, COUNT(*) FROM papers WHERE "+whereClause+" GROUP BY status", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		out[status] = n
+	}
+	return out, rows.Err()
 }
 
 func (d *DB) UpdatePaperStatus(id int64, status string) error {

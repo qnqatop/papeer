@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { safeEventsOn } from '../composables/useWailsEvent'
+import i18n from '../i18n'
+
+const t = (key: string, params: Record<string, unknown> = {}) => i18n.global.t(key, params)
 
 export interface SearchEvent {
   type: string
@@ -35,6 +38,26 @@ function pushCapped<T>(list: T[], item: T) {
   if (list.length > MAX_PROGRESS_EVENTS) list.splice(0, list.length - MAX_PROGRESS_EVENTS)
 }
 
+// A paper whose download failed; kept until it is retried successfully or
+// dismissed, independently of the capped per-run download log.
+export interface FailedDownload {
+  paper_id: number
+  title: string
+  error: string
+  at: number
+}
+
+// One completed radar run as reported by the radar:done event.
+export interface RadarRun {
+  at: number
+  profile_id: number
+  new_papers: number
+  processed: number
+}
+
+export const MAX_FAILED_DOWNLOADS = 50
+export const MAX_RADAR_RUNS = 5
+
 export type NotifyFn = (type: 'success' | 'error' | 'warning' | 'info', content: string) => void
 
 export const useProgressStore = defineStore('progress', () => {
@@ -54,6 +77,22 @@ export const useProgressStore = defineStore('progress', () => {
   const current = ref(0)
   const total = ref(0)
   const lastEvent = ref<string>('')
+  const failedDownloads = ref<FailedDownload[]>([])
+  const radarRuns = ref<RadarRun[]>([])
+
+  function recordDownloadResult(event: DownloadEvent) {
+    if (!event.paper_id) return
+    const rest = failedDownloads.value.filter(f => f.paper_id !== event.paper_id)
+    if (event.type === 'fail') {
+      rest.unshift({ paper_id: event.paper_id, title: event.title, error: event.error || '', at: Date.now() })
+      if (rest.length > MAX_FAILED_DOWNLOADS) rest.length = MAX_FAILED_DOWNLOADS
+    }
+    failedDownloads.value = rest
+  }
+
+  function dismissFailedDownload(paperId: number) {
+    failedDownloads.value = failedDownloads.value.filter(f => f.paper_id !== paperId)
+  }
 
   // Callbacks set by App.vue for cross-view notifications and data refresh.
   let notify: NotifyFn = () => {}
@@ -88,39 +127,52 @@ export const useProgressStore = defineStore('progress', () => {
     lastEvent.value = ''
   }
 
+  // Unsubscribe functions returned by EventsOn. stopListening calls them
+  // instead of EventsOff(name), which would also drop other subscribers.
+  let unsubs: Array<() => void> = []
+
+  function listen(name: string, cb: (...data: any) => void) {
+    const off = safeEventsOn(name, cb)
+    if (typeof off === 'function') unsubs.push(off)
+  }
+
+  let listening = false
+
   function startListening() {
-    EventsOn('search:progress', (event: SearchEvent) => {
+    if (listening) return
+    listening = true
+    listen('search:progress', (event: SearchEvent) => {
       pushCapped(searchEvents.value, event)
       if (event.type === 'provider_done') {
-        lastEvent.value = `${event.provider}: ${event.count} papers`
+        lastEvent.value = t('progress.providerDone', { provider: event.provider, count: event.count })
       } else if (event.type === 'query_start') {
-        lastEvent.value = `Searching: "${event.query}"`
+        lastEvent.value = t('progress.searching', { query: event.query })
       } else if (event.type === 'axis_done') {
-        lastEvent.value = `Axis done: ${event.total} papers`
+        lastEvent.value = t('progress.axisDone', { count: event.total })
       } else if (event.type === 'provider_error') {
-        lastEvent.value = `${event.provider}: error`
+        lastEvent.value = t('progress.providerError', { provider: event.provider })
       } else if (event.type === 'save_error') {
-        lastEvent.value = `${event.axis}: ${event.count} papers not saved`
+        lastEvent.value = t('progress.saveError', { axis: event.axis, count: event.count })
       }
     })
 
-    EventsOn('search:done', (data: any) => {
+    listen('search:done', (data: any) => {
       searching.value = false
       total.value = data?.total || 0
-      lastEvent.value = `Search complete: ${total.value} papers`
-      notify('success', `Search complete: found ${total.value} papers`)
+      lastEvent.value = t('progress.searchComplete', { count: total.value })
+      notify('success', t('progress.searchCompleteToast', { count: total.value }))
       onSearchDone?.()
     })
 
-    EventsOn('search:error', (data: any) => {
+    listen('search:error', (data: any) => {
       pushCapped(searchEvents.value, {
         type: 'error', axis: data?.axis || '', query: '', provider: '',
         count: 0, total: 0, error: data?.error || '', duration_ms: 0, raw_count: 0,
       })
-      lastEvent.value = `Error: ${data?.axis}: ${data?.error}`
+      lastEvent.value = t('progress.searchError', { axis: data?.axis ?? '', error: data?.error ?? '' })
     })
 
-    EventsOn('download:progress', (event: DownloadEvent) => {
+    listen('download:progress', (event: DownloadEvent) => {
       if (!downloading.value) {
         resetDownload()
         downloading.value = true
@@ -128,60 +180,72 @@ export const useProgressStore = defineStore('progress', () => {
       pushCapped(downloadEvents.value, event)
       if (event.type === 'done') downloadDone.value++
       else if (event.type === 'fail') downloadFailed.value++
+      if (event.type === 'done' || event.type === 'fail') recordDownloadResult(event)
       current.value = event.current
       total.value = event.total
       if (event.type === 'start') {
         lastEvent.value = `[${event.current}/${event.total}] ${event.title}`
       } else if (event.type === 'resolving') {
-        lastEvent.value = `[${event.current}/${event.total}] Trying ${event.source}...`
+        lastEvent.value = t('progress.downloadTrying', { current: event.current, total: event.total, source: event.source })
       } else if (event.type === 'done') {
-        lastEvent.value = `[${event.current}/${event.total}] Downloaded via ${event.source}`
+        lastEvent.value = t('progress.downloadDone', { current: event.current, total: event.total, source: event.source })
       } else if (event.type === 'fail' && event.error) {
-        lastEvent.value = `[${event.current}/${event.total}] Failed: ${event.error}`
+        lastEvent.value = t('progress.downloadFailed', { current: event.current, total: event.total, error: event.error })
       }
     })
 
-    EventsOn('download:done', () => {
+    listen('download:done', () => {
       downloading.value = false
       const done = downloadDone.value
       const failed = downloadFailed.value
-      lastEvent.value = 'Download complete'
+      lastEvent.value = t('progress.downloadComplete')
       // Only show toast for batch downloads, not single-paper auto-downloads
       if (total.value > 1) {
         notify(
           failed > 0 ? 'warning' : 'success',
-          `Download complete: ${done} downloaded, ${failed} failed`,
+          t('progress.downloadCompleteToast', { done, failed }),
         )
       }
       onDownloadDone?.()
     })
 
-    EventsOn('review:progress', (data: any) => {
+    listen('review:progress', (data: any) => {
       reviewRunning.value = true
       reviewCurrent.value = data?.current ?? 0
       reviewTotal.value = data?.total ?? 0
       reviewLabel.value = data?.label ?? ''
     })
 
-    EventsOn('review:done', () => {
+    listen('review:done', () => {
       reviewRunning.value = false
       reviewCurrent.value = 0
       reviewTotal.value = 0
       reviewLabel.value = ''
     })
 
-    EventsOn('radar:done', () => {
+    listen('radar:done', (data: any) => {
       radarRunning.value = false
+      radarRuns.value = [
+        {
+          at: Date.now(),
+          profile_id: data?.profile_id ?? 0,
+          new_papers: data?.new_papers ?? 0,
+          processed: data?.processed ?? 0,
+        },
+        ...radarRuns.value,
+      ].slice(0, MAX_RADAR_RUNS)
     })
   }
 
   function stopListening() {
-    EventsOff('search:progress', 'search:done', 'search:error', 'download:progress', 'download:done', 'review:progress', 'review:done', 'radar:done')
+    for (const off of unsubs) off()
+    unsubs = []
+    listening = false
   }
 
   return {
     searching, downloading, radarRunning, searchEvents, downloadEvents, downloadDone, downloadFailed,
-    current, total, lastEvent, reviewRunning, reviewCurrent, reviewTotal, reviewLabel,
+    current, total, lastEvent, failedDownloads, radarRuns, dismissFailedDownload, reviewRunning, reviewCurrent, reviewTotal, reviewLabel,
     resetSearch, resetDownload, startListening, stopListening,
     setNotify, setOnSearchDone, setOnDownloadDone,
   }

@@ -103,6 +103,7 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, onMounted, nextTick, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { localizeBackendError } from '../utils/errors'
 import {
   NSpin, NText, NSpace, NButton, NIcon, NDivider,
   NInput, NProgress, NSelect,
@@ -311,7 +312,7 @@ async function loadPDF() {
     } else if (e?.status === 404 || msg.includes('Missing PDF') || msg.includes('404') || msg.includes('not found') || msg.includes('Not Found') || msg.includes('no successful download')) {
       error.value = t('papers.pdfNotFound')
     } else {
-      error.value = t('papers.pdfError', { error: msg })
+      error.value = t('papers.pdfError', { error: localizeBackendError(e, t) })
     }
   }
 }
@@ -424,13 +425,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--color-neutral-700, #334155);
+  background: var(--surface-backdrop);
 }
 
 .pdf-viewer--fullscreen {
   width: 100vw;
   height: 100vh;
-  background: var(--color-neutral-800, #1e293b);
+  background: var(--surface-backdrop-deep);
 }
 
 .pdf-toolbar {

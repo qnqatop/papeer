@@ -221,7 +221,12 @@
       "backgroundTasks": "Background tasks",
       "noTasks": "No active tasks",
       "downloadComplete": "Download complete",
-      "draftingReview": "Generating review draft..."
+      "draftingReview": "Generating review draft...",
+      "failedDownloads": "Failed downloads",
+      "retry": "Retry",
+      "dismiss": "Dismiss",
+      "radarRuns": "Radar",
+      "radarRunLine": "{time}: {count} new"
     },
     "welcome": {
       "title": "No research profiles yet",
@@ -378,7 +383,16 @@
     "confirmTitle": "Confirm Download",
     "confirmMessage": "Download {count} approved papers to",
     "startDownload": "Start Download",
-    "noApproved": "No approved papers to download"
+    "noApproved": "No approved papers to download",
+    "failReason": {
+      "blocked": "Blocked by the publisher (captcha / anti-bot)",
+      "rateLimited": "Source rate limit — try later",
+      "invalidPdf": "Got a page instead of a PDF",
+      "noSource": "No open-access PDF found",
+      "other": "Download failed"
+    },
+    "retryStarted": "Retrying download…",
+    "autoDownloadFailed": "Status saved, but the PDF download did not start: {error}"
   },
   "stats": {
     "title": "Statistics",
@@ -420,6 +434,12 @@
       "saved": "Prompt saved",
       "reset": "Reset to Default",
       "resetConfirm": "Reset prompt to default?"
+    },
+    "theme": {
+      "label": "Theme",
+      "auto": "System",
+      "light": "Light",
+      "dark": "Dark"
     }
   },
   "llm": {
@@ -712,5 +732,48 @@
       "available": "New version {version} is available",
       "action": "Update"
     }
+  },
+  "progress": {
+    "providerDone": "{provider}: {count} papers",
+    "searching": "Searching: \"{query}\"",
+    "axisDone": "Axis done: {count} papers",
+    "providerError": "{provider}: error",
+    "saveError": "{axis}: {count} papers not saved",
+    "searchComplete": "Search complete: {count} papers",
+    "searchCompleteToast": "Search complete: found {count} papers",
+    "searchError": "Error: {axis}: {error}",
+    "downloadTrying": "[{current}/{total}] Trying {source}...",
+    "downloadDone": "[{current}/{total}] Downloaded via {source}",
+    "downloadFailed": "[{current}/{total}] Failed: {error}",
+    "downloadComplete": "Download complete",
+    "downloadCompleteToast": "Download complete: {done} downloaded, {failed} failed"
+  },
+  "errors": {
+    "pdfDirNotConfigured": "PDF folder is not set for this profile — choose one in the profile settings.",
+    "noFailedDownloads": "There are no failed downloads to retry.",
+    "noDownloadedPdfs": "No downloaded papers with PDFs yet.",
+    "noPdf": "The PDF for this paper has not been downloaded yet.",
+    "pdfFileMissing": "The PDF file is missing on disk — download it again.",
+    "pdfUnavailable": "PDF storage is not ready yet. Try again in a moment.",
+    "chromeNotFound": "Chrome/Chromium was not found — install it to download from protected publishers.",
+    "noValidPapers": "None of the selected papers were found.",
+    "invalidProxy": "Invalid proxy URL. Use a form like http://host:port or socks5://host:port.",
+    "unknownSetting": "This setting cannot be changed.",
+    "updaterUnavailable": "The updater is not available in this build.",
+    "summaryBusy": "A summary for this paper and model is already being generated.",
+    "summaryExists": "A summary already exists — use Regenerate.",
+    "noLlmKey": "The active LLM profile has no API key. Add it in Settings → LLM.",
+    "noActiveLlmProfile": "No active LLM profile. Add one in Settings → LLM and make it active.",
+    "modelNotInProfile": "The selected model is not part of the active LLM profile.",
+    "noModel": "No model selected for the LLM profile.",
+    "insecureLlmUrl": "The LLM base URL must use https (plain http is allowed only for localhost).",
+    "llmKeyReentry": "The LLM base URL host changed — enter the API key again.",
+    "invalidLlmUrl": "Invalid LLM base URL.",
+    "yamlTooLarge": "The YAML file is too large.",
+    "noAxesToExport": "There are no axes to export.",
+    "blockedDestination": "The request was blocked: the address points to a local or private network.",
+    "bodyTooLarge": "The server response was too large.",
+    "timeout": "The request timed out. Check your connection or proxy and try again.",
+    "network": "Network error: the server could not be reached. Check your connection or proxy."
   }
 }

@@ -142,6 +142,8 @@
 import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { localizeBackendError } from '../utils/errors'
+import { willLeaveStatusFilter } from '../utils/statusFilter'
 import type { DataTableColumn } from 'naive-ui'
 import {
   NCard, NEmpty, NSpace, NButton, NButtonGroup, NSelect, NInput,
@@ -156,9 +158,9 @@ import { usePapersStore } from '../stores/papers'
 import { useSummaryStore } from '../stores/summary'
 import { useLLMProfilesStore } from '../stores/llmProfiles'
 import { useOnboardingPhase } from '../composables/useOnboarding'
-import { AxesWithPapers, ListTags, SetPaperTags, ListPapers, ExportBibTeX, ExportCSV, SaveExportFile, GetPaper, DownloadPaper, DownloadApproved, GetFailedDownloadPaperIDs } from '../../wailsjs/go/app/App'
+import { AxesWithPapers, ListTags, SetPaperTags, CountPapersByStatus, ExportBibTeX, ExportCSV, SaveExportFile, GetPaper, DownloadPaper, DownloadApproved, GetFailedDownloadPaperIDs } from '../../wailsjs/go/app/App'
 import { db } from '../../wailsjs/go/models'
-import { EventsOn } from '../../wailsjs/runtime/runtime'
+import { useWailsEvent } from '../composables/useWailsEvent'
 
 const { t } = useI18n()
 const vueRoute = useRoute()
@@ -214,7 +216,7 @@ async function exportBibtex() {
     await SaveExportFile('papeer_export.bib', content)
     message.success(t('papers.bibtexExported'))
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e?.message || String(e) }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
   } finally {
     exportingBibtex.value = false
   }
@@ -228,7 +230,7 @@ async function exportCsv() {
     await SaveExportFile('papeer_export.csv', content)
     message.success(t('papers.csvExported'))
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e?.message || String(e) }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
   } finally {
     exportingCsv.value = false
   }
@@ -245,34 +247,29 @@ watch(statusSegment, (val) => {
 async function loadStatusCounts() {
   if (!profileStore.activeProfileId) return
   const pid = profileStore.activeProfileId
-  const base: any = {
+  const filter = new db.PaperFilter({
     profile_id: pid,
-    limit: 1,
-    offset: 0,
     axis_id: axisFilter.value ?? undefined,
     min_score: minScoreFilter.value ?? 0,
     max_score: maxScoreFilter.value ?? 0,
     min_citations: minCitationsFilter.value ?? 0,
     year_from: yearFromFilter.value ?? 0,
     year_to: yearToFilter.value ?? 0,
+    min_user_score: minUserScoreFilter.value ?? 0,
     search: searchFilter.value || '',
     tag_ids: tagFilter.value != null ? [tagFilter.value] : [],
     has_summary: hasSummaryFilter.value || undefined,
-  }
+  })
   try {
-    const [newR, appR, rejR, dlR] = await Promise.all([
-      ListPapers(new db.PaperFilter({ ...base, status: 'new' })),
-      ListPapers(new db.PaperFilter({ ...base, status: 'approved' })),
-      ListPapers(new db.PaperFilter({ ...base, status: 'rejected' })),
-      ListPapers(new db.PaperFilter({ ...base, status: 'downloaded' })),
-    ])
+    // One grouped query with the same WHERE as the list itself.
+    const counts = await CountPapersByStatus(filter) || {}
     statusCounts.value = {
-      new: newR.total,
-      approved: appR.total,
-      rejected: rejR.total,
-      downloaded: dlR.total,
+      new: counts.new ?? 0,
+      approved: counts.approved ?? 0,
+      rejected: counts.rejected ?? 0,
+      downloaded: counts.downloaded ?? 0,
     }
-    approvedNoPdfCount.value = appR.total
+    approvedNoPdfCount.value = statusCounts.value.approved
   } catch { /* ignore */ }
   loadFailedDownloads()
 }
@@ -396,7 +393,6 @@ const allTags = ref<db.Tag[]>([])
 const tagFilter = ref<number | null>(null)
 const hasSummaryFilter = ref(false)
 const failedDownloadPaperIDs = ref<Set<number>>(new Set())
-const downloadDoneRegistered = ref(false)
 
 const tagOptions = computed(() =>
   allTags.value.map(t => ({ label: t.name, value: t.id }))
@@ -417,6 +413,7 @@ const activeFilterCount = computed(() => {
 function clearAllFilters() {
   axisFilter.value = null
   statusFilter.value = null
+  statusSegment.value = ''
   minScoreFilter.value = null
   maxScoreFilter.value = null
   yearFromFilter.value = null
@@ -483,7 +480,7 @@ async function setStatus(paper: db.Paper, status: string) {
     isAdvancing.value = true
 
     // Predict whether paper will stay or disappear from the current filter
-    const willDisappear = statusFilter.value !== '' && statusFilter.value !== status
+    const willDisappear = willLeaveStatusFilter(statusFilter.value, status)
 
     if (willDisappear) {
       // Paper disappears — keep index (next paper fills the slot)
@@ -512,10 +509,15 @@ async function setStatus(paper: db.Paper, status: string) {
     isAdvancing.value = false
 
     if (status === 'approved') {
-      DownloadPaper(paper.id).catch(() => { /* fire and forget */ })
+      // The download itself runs in the background and reports through
+      // download:progress; only a synchronous refusal (no PDF folder,
+      // invalid e-mail, ...) is surfaced here.
+      DownloadPaper(paper.id).catch((e: unknown) => {
+        message.warning(t('download.autoDownloadFailed', { error: localizeBackendError(e, t) }), { duration: 6000 })
+      })
     }
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
     isAdvancing.value = false
   }
 }
@@ -525,7 +527,7 @@ async function setScore(paper: db.Paper, score: number) {
     await store.setScore(paper.id, score)
     paper.user_score = score
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -535,7 +537,7 @@ async function saveNotes(paper: db.Paper, notes: string) {
     await store.setNotes(paper.id, notes)
     paper.notes = notes
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -597,7 +599,7 @@ async function savePaperTags(tagIDs: number[]) {
     store.fetchPapers()
     message.success(t('tags.tagsUpdated'))
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -630,7 +632,7 @@ async function downloadAllApproved() {
     loadStatusCounts()
     downloadBannerDismissed.value = false
   } catch (e: any) {
-    message.error(t('papers.failed', { error: e?.message || String(e) }))
+    message.error(t('papers.failed', { error: localizeBackendError(e, t) }))
   }
 }
 
@@ -699,6 +701,8 @@ function scrollToSelected() {
   }
 }
 
+useWailsEvent('download:done', () => loadStatusCounts())
+
 onMounted(() => {
   // Apply query params
   if (vueRoute.query.has_summary === 'true') {
@@ -715,10 +719,6 @@ onMounted(() => {
     if (!Number.isNaN(id)) openPaperById(id)
   }
   document.addEventListener('keydown', handleKeydown, true)
-  if (!downloadDoneRegistered.value) {
-    EventsOn('download:done', loadStatusCounts)
-    downloadDoneRegistered.value = true
-  }
 })
 
 // Re-open when navigating here again with a different ?paper_id while

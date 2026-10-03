@@ -494,6 +494,12 @@ func (a *App) ListPapers(f db.PaperFilter) (*PaperListResult, error) {
 	return &PaperListResult{Papers: papers, Total: total}, nil
 }
 
+// CountPapersByStatus returns per-status paper counts for the status tabs,
+// applying every filter of f except status, sorting and paging.
+func (a *App) CountPapersByStatus(f db.PaperFilter) (map[string]int, error) {
+	return a.db.CountPapersByStatus(f)
+}
+
 func (a *App) GetPaper(id int64) (*db.Paper, error) {
 	return a.db.GetPaper(id)
 }

@@ -1,5 +1,5 @@
 <template>
-  <n-config-provider :theme="darkTheme" :theme-overrides="themeOverrides">
+  <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides">
     <n-message-provider>
       <n-dialog-provider>
         <AppShell />
@@ -9,9 +9,25 @@
 </template>
 
 <script setup lang="ts">
-import { darkTheme, NConfigProvider, NMessageProvider, NDialogProvider } from 'naive-ui'
-import { themeOverrides } from './theme/naive-overrides'
+import { computed, watchEffect } from 'vue'
+import { darkTheme, NConfigProvider, NMessageProvider, NDialogProvider, useOsTheme } from 'naive-ui'
+import { getThemeOverrides } from './theme/naive-overrides'
+import { themePreference, resolvedThemeMode, resolveThemeMode } from './theme/mode'
 import AppShell from './AppShell.vue'
+
+const osTheme = useOsTheme()
+const mode = computed(() => resolveThemeMode(themePreference.value, osTheme.value))
+// null selects Naive UI's built-in light theme.
+const naiveTheme = computed(() => (mode.value === 'dark' ? darkTheme : null))
+const themeOverrides = computed(() => getThemeOverrides(mode.value))
+
+// Expose the mode to plain CSS (tokens.css [data-theme="light"]) and to
+// components that need concrete colors (graphs).
+watchEffect(() => {
+  resolvedThemeMode.value = mode.value
+  document.documentElement.dataset.theme = mode.value
+  document.documentElement.style.colorScheme = mode.value
+})
 </script>
 
 <style>
