@@ -104,6 +104,9 @@ type App struct {
 
 	rateLimitsOnce sync.Once
 	rateLimits     *httpclient.RateLimitRegistry // shared by every client from makeHTTPClient
+
+	dlGateOnce sync.Once
+	dlGate     *download.RateGate // per-host breaker shared by every download engine
 }
 
 // LLM-related errors.
@@ -767,7 +770,8 @@ func (a *App) DownloadApproved(profileID int64) error {
 		runtime.EventsEmit(a.ctx, "download:progress", e)
 	}
 
-	engine := download.NewEngine(client, a.db, dlSources, profile.PdfDir, 4, onEvent)
+	engine := download.NewEngine(client, a.db, dlSources, profile.PdfDir, 4, onEvent).
+		WithRateGate(a.downloadRateGate())
 
 	a.safeGo("DownloadApproved", func() {
 		defer func() {
@@ -841,7 +845,8 @@ func (a *App) DownloadPaper(paperID int64) error {
 		runtime.EventsEmit(a.ctx, "download:progress", e)
 	}
 
-	engine := download.NewEngine(client, a.db, dlSources, profile.PdfDir, 4, onEvent)
+	engine := download.NewEngine(client, a.db, dlSources, profile.PdfDir, 4, onEvent).
+		WithRateGate(a.downloadRateGate())
 
 	started = true
 	a.safeGo("DownloadPaper", func() {
@@ -859,6 +864,14 @@ func (a *App) DownloadPaper(paperID int64) error {
 
 func (a *App) GetFailedDownloadPaperIDs(profileID int64) (map[int64]bool, error) {
 	return a.db.GetFailedDownloadPaperIDs(profileID)
+}
+
+// downloadRateGate returns the app-scoped download circuit breaker, so a
+// Semantic Scholar 429 seen by one download also short-circuits the next
+// single-paper downloads instead of each burning its own retries.
+func (a *App) downloadRateGate() *download.RateGate {
+	a.dlGateOnce.Do(func() { a.dlGate = download.NewRateGate() })
+	return a.dlGate
 }
 
 func buildDownloadSources(profile *db.Profile) []download.Source {

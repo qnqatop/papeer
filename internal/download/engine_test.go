@@ -469,3 +469,42 @@ func TestDownloadApproved_OnlyApprovedPapers(t *testing.T) {
 		t.Errorf("expected 'paper-approved', got %q", papers[0].Title)
 	}
 }
+
+// infoRecorder records the PaperInfo each Resolve call receives.
+type infoRecorder struct {
+	name  string
+	infos []PaperInfo
+}
+
+func (r *infoRecorder) Name() string { return r.name }
+func (r *infoRecorder) Resolve(_ context.Context, _ *httpclient.Client, info PaperInfo) ResolveResult {
+	r.infos = append(r.infos, info)
+	return ResolveResult{Reason: "nope"}
+}
+
+func TestEngine_PassesGateAndPerPaperMemo(t *testing.T) {
+	d := testDB(t)
+	paper := createTestPaper(t, d)
+	gate := NewRateGate()
+	a, b := &infoRecorder{name: "a"}, &infoRecorder{name: "b"}
+	engine := NewEngine(httpclient.New("test@test.com"), d, []Source{a, b}, t.TempDir(), 1, nil).
+		WithRateGate(gate)
+
+	engine.DownloadOne(context.Background(), paper, "test@test.com", 1, 1)
+	engine.DownloadOne(context.Background(), paper, "test@test.com", 1, 1)
+
+	if len(a.infos) != 2 || len(b.infos) != 2 {
+		t.Fatalf("calls a=%d b=%d, want 2 each", len(a.infos), len(b.infos))
+	}
+	for i := range 2 {
+		if a.infos[i].Gate != gate || b.infos[i].Gate != gate {
+			t.Errorf("call %d: gate not passed to sources", i)
+		}
+		if a.infos[i].Lookups == nil || a.infos[i].Lookups != b.infos[i].Lookups {
+			t.Errorf("call %d: sources of one paper must share one memo", i)
+		}
+	}
+	if a.infos[0].Lookups == a.infos[1].Lookups {
+		t.Error("each DownloadOne must get a fresh memo")
+	}
+}

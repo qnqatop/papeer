@@ -395,7 +395,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   NCard, NSpace, NButton, NIcon, NSelect, NText, NInput,
@@ -425,6 +425,7 @@ import { useUpdater } from '../composables/useUpdater'
 
 const { t } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const onboardingStore = useOnboardingStore()
 const profileStore = useProfileStore()
 const progressStore = useProgressStore()
@@ -850,6 +851,17 @@ onMounted(() => {
 })
 
 watch(() => profileStore.activeProfileId, () => { fetchTags() })
+
+// ?section=<key> opens that section (e.g. the S2 rate-limit hint links to
+// ?section=search). Watched, not just read on mount, because the link can be
+// followed while Settings is already open. The query is dropped once applied
+// so following the same link again after switching sections still works.
+watch(() => route.query.section, (section) => {
+  if (typeof section !== 'string') return
+  if (sectionOptions.value.some((o) => o.key === section)) activeSection.value = section
+  const { section: _applied, ...rest } = route.query
+  router.replace({ query: rest, hash: route.hash })
+}, { immediate: true })
 </script>
 
 <style scoped>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isInvalidEmailError, localizeBackendError, downloadFailReason } from '../utils/errors'
+import { isInvalidEmailError, localizeBackendError, downloadFailReason, isS2RateLimited, SEARCH_SETTINGS_ROUTE } from '../utils/errors'
 
 // localizeBackendError takes vue-i18n's `t` function; a plain passthrough
 // stub is enough to verify which key/marker was matched without pulling in
@@ -99,5 +99,33 @@ describe('downloadFailReason', () => {
 
   it('prefers known backend markers', () => {
     expect(downloadFailReason('PDF directory not configured for profile "X"', t)).toBe('errors.pdfDirNotConfigured')
+  })
+})
+
+describe('isS2RateLimited', () => {
+  it('matches the stable backend marker (live 429 and breaker skip)', () => {
+    expect(isS2RateLimited('all sources exhausted: s2_doi: S2 rate limited: HTTP 429 from api.semanticscholar.org')).toBe(true)
+    expect(isS2RateLimited('all sources exhausted: s2_title: S2 skipped: S2 rate limited (retry after 14:05:09)')).toBe(true)
+  })
+
+  it('matches raw S2 429s from older logs', () => {
+    expect(isS2RateLimited('arxiv: S2 lookup failed: HTTP 429 from api.semanticscholar.org')).toBe(true)
+  })
+
+  it('ignores other hosts\' rate limits and empty values', () => {
+    expect(isS2RateLimited('crossref: HTTP 429 from api.crossref.org')).toBe(false)
+    expect(isS2RateLimited('')).toBe(false)
+    expect(isS2RateLimited(undefined)).toBe(false)
+  })
+
+  it('downloadFailReason reports the S2 limit specifically', () => {
+    const err = 'all sources exhausted: arxiv: no arXiv location in OpenAlex, S2 rate limited: HTTP 429 from api.semanticscholar.org; openalex: OpenAlex: no OA location'
+    expect(downloadFailReason(err, t)).toBe('download.failReason.s2RateLimited')
+    // A non-S2 429 keeps the generic rate-limit reason.
+    expect(downloadFailReason('all sources exhausted: crossref: HTTP 429 from api.crossref.org', t)).toBe('download.failReason.rateLimited')
+  })
+
+  it('links to the Search settings section', () => {
+    expect(SEARCH_SETTINGS_ROUTE).toEqual({ name: 'settings', query: { section: 'search' } })
   })
 })

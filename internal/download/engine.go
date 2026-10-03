@@ -37,6 +37,7 @@ type Engine struct {
 	pdfDir   string
 	workers  int
 	onEvent  DownloadEventFunc
+	gate     *RateGate
 }
 
 // NewEngine creates a download engine.
@@ -57,6 +58,13 @@ func NewEngine(client *httpclient.Client, database *db.DB, sources []Source, pdf
 	}
 }
 
+// WithRateGate makes the engine share gate with other engines, so a metadata
+// API that rate-limited one download is skipped by the following ones.
+func (e *Engine) WithRateGate(gate *RateGate) *Engine {
+	e.gate = gate
+	return e
+}
+
 // DownloadAll downloads PDFs for the given papers using worker pool.
 func (e *Engine) DownloadAll(ctx context.Context, papers []db.Paper, email string) {
 	if err := os.MkdirAll(e.pdfDir, 0o755); err != nil {
@@ -75,15 +83,15 @@ func (e *Engine) DownloadAll(ctx context.Context, papers []db.Paper, email strin
 		go func() {
 			defer wg.Done()
 			for idx := range jobs {
-			if ctx.Err() != nil {
-				// Drain remaining jobs so the sender doesn't block.
-				for range jobs {
+				if ctx.Err() != nil {
+					// Drain remaining jobs so the sender doesn't block.
+					for range jobs {
+					}
+					return
 				}
-				return
+				cur := counter.inc()
+				e.DownloadOne(ctx, papers[idx], email, cur, total)
 			}
-			cur := counter.inc()
-			e.DownloadOne(ctx, papers[idx], email, cur, total)
-		}
 		}()
 	}
 
@@ -110,6 +118,8 @@ func (e *Engine) DownloadOne(ctx context.Context, paper db.Paper, email string, 
 		Title:   paper.Title,
 		PdfURL:  ptr.Val(paper.PdfURL),
 		Email:   email,
+		Gate:    e.gate,
+		Lookups: NewLookups(),
 	}
 
 	// Reasons accumulated per source for the final fail event.

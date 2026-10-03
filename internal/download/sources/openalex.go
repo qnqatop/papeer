@@ -3,7 +3,6 @@ package sources
 import (
 	"context"
 	"fmt"
-	"net/url"
 
 	"github.com/qnqatop/papeer/internal/download"
 	"github.com/qnqatop/papeer/internal/httpclient"
@@ -25,21 +24,13 @@ func (o *OpenAlex) Resolve(ctx context.Context, client *httpclient.Client, info 
 		return download.ResolveResult{Reason: "no DOI"}
 	}
 
-	base := o.baseURL
-	if base == "" {
-		base = "https://api.openalex.org"
-	}
-	u := fmt.Sprintf("%s/works/doi:%s", base, url.PathEscape(info.DOI))
-
-	var resp struct {
-		BestOALocation  *oaLoc `json:"best_oa_location"`
-		PrimaryLocation *oaLoc `json:"primary_location"`
-	}
-	if err := client.DoJSON(ctx, u, &resp); err != nil {
+	// Usually already fetched (and memoized) by the arxiv source.
+	work, err := fetchOpenAlexWork(ctx, client, info, o.baseURL)
+	if err != nil {
 		return download.ResolveResult{Reason: fmt.Sprintf("OpenAlex lookup failed: %v", err)}
 	}
 
-	for _, loc := range []*oaLoc{resp.BestOALocation, resp.PrimaryLocation} {
+	for _, loc := range []*oaLoc{work.BestOALocation, work.PrimaryLocation} {
 		if loc == nil {
 			continue
 		}
@@ -52,10 +43,4 @@ func (o *OpenAlex) Resolve(ctx context.Context, client *httpclient.Client, info 
 	}
 
 	return download.ResolveResult{Reason: "OpenAlex: no OA location"}
-}
-
-type oaLoc struct {
-	PdfURL         string `json:"pdf_url"`
-	LandingPageURL string `json:"landing_page_url"`
-	IsOA           bool   `json:"is_oa"`
 }

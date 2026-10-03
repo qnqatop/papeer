@@ -389,8 +389,11 @@
       "rateLimited": "Лимит запросов источника — повторите позже",
       "invalidPdf": "Вместо PDF получена страница",
       "noSource": "Открытая PDF-версия не найдена",
-      "other": "Не удалось скачать"
+      "other": "Не удалось скачать",
+      "s2RateLimited": "Semantic Scholar ограничил запросы"
     },
+    "s2RateLimitHint": "Semantic Scholar ограничил запросы — добавьте API-ключ в Настройки → Поиск",
+    "openSearchSettings": "Открыть настройки",
     "retryStarted": "Повторяем скачивание…",
     "autoDownloadFailed": "Статус сохранён, но скачивание PDF не запустилось: {error}"
   },

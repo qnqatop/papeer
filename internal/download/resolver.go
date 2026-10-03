@@ -13,6 +13,13 @@ type PaperInfo struct {
 	Title   string
 	PdfURL  string // pre-found URL from search phase
 	Email   string // for Unpaywall
+
+	// Gate and Lookups are shared state passed explicitly rather than via
+	// context values: sources already receive PaperInfo, the dependency stays
+	// typed and visible in tests, and both are nil-safe (nil = no breaker, no
+	// memo) so sources work unchanged when called standalone.
+	Gate    *RateGate // app-scoped per-host circuit breaker
+	Lookups *Lookups  // per-paper memo of metadata API responses
 }
 
 // ResolveResult is the outcome of a source trying to find a PDF URL.

@@ -1,5 +1,5 @@
 <template>
-  <n-popover trigger="click" placement="bottom-end" :width="360">
+  <n-popover v-model:show="showPopover" trigger="click" placement="bottom-end" :width="360">
     <template #trigger>
       <n-badge :value="activeCount" :show="activeCount > 0" :offset="[-4, 4]">
         <n-button quaternary circle size="small">
@@ -59,7 +59,7 @@
             style="margin-top: 4px"
           />
           <!-- Per-paper download log with per-source attempt chips. -->
-          <download-log max-height="240px" style="margin-top: 6px" />
+          <download-log max-height="240px" style="margin-top: 6px" @navigate="showPopover = false" />
         </div>
 
         <!-- Review draft -->
@@ -97,6 +97,7 @@
           <n-text style="font-size: 13px">
             {{ t('v2.header.failedDownloads') }} ({{ progressStore.failedDownloads.length }})
           </n-text>
+          <s2-rate-limit-hint v-if="anyS2RateLimited" @navigate="showPopover = false" />
           <div class="failed-list">
             <div v-for="f in progressStore.failedDownloads" :key="f.paper_id" class="failed-row">
               <div class="failed-text">
@@ -142,12 +143,20 @@ import {
 import { SyncOutline } from '@vicons/ionicons5'
 import { useProgressStore } from '../../stores/progress'
 import DownloadLog from '../DownloadLog.vue'
+import S2RateLimitHint from '../S2RateLimitHint.vue'
 import { DownloadPaper } from '../../../wailsjs/go/app/App'
-import { downloadFailReason, localizeBackendError } from '../../utils/errors'
+import { downloadFailReason, isS2RateLimited, localizeBackendError } from '../../utils/errors'
 
 const { t, locale } = useI18n()
 const progressStore = useProgressStore()
 const message = useMessage()
+
+const showPopover = ref(false)
+
+// One hint for the whole failed list: the fix (an S2 API key) is global.
+const anyS2RateLimited = computed(() =>
+  progressStore.failedDownloads.some((f) => isS2RateLimited(f.error)),
+)
 
 const hasHistory = computed(() =>
   progressStore.failedDownloads.length > 0 || progressStore.radarRuns.length > 0,

@@ -44,6 +44,7 @@
           <template v-else>{{ att.source }}<span v-if="att.reason" class="reason"> — {{ att.reason }}</span></template>
         </span>
       </div>
+      <s2-rate-limit-hint v-if="card.status === 'fail' && card.s2RateLimited" class="paper-card-hint" @navigate="emit('navigate')" />
     </div>
   </n-scrollbar>
 </template>
@@ -53,11 +54,15 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NScrollbar, NText } from 'naive-ui'
 import { useProgressStore } from '../stores/progress'
+import { isS2RateLimited } from '../utils/errors'
+import S2RateLimitHint from './S2RateLimitHint.vue'
 
 const { t } = useI18n()
 const progressStore = useProgressStore()
 
 withDefaults(defineProps<{ maxHeight?: string }>(), { maxHeight: '360px' })
+// Fired when a hint link leaves the current view, so a host popover/modal can close.
+const emit = defineEmits<{ navigate: [] }>()
 
 const scrollRef = ref<InstanceType<typeof NScrollbar> | null>(null)
 
@@ -76,6 +81,7 @@ interface PaperCard {
   currentAction: string
   attempts: AttemptChip[]
   successSource: string
+  s2RateLimited: boolean
 }
 
 // Aggregate the flat event stream into one card per paper. Each card tracks
@@ -100,6 +106,7 @@ const paperCards = computed<PaperCard[]>(() => {
         currentAction: t('download.queued'),
         attempts: [],
         successSource: '',
+        s2RateLimited: false,
       }
       byID.set(ev.paper_id, card)
     }
@@ -133,6 +140,7 @@ const paperCards = computed<PaperCard[]>(() => {
         // giant string.
         if (ev.error) {
           card.attempts = parseFailReasons(ev.error)
+          card.s2RateLimited = isS2RateLimited(ev.error)
         }
         break
     }
@@ -248,6 +256,9 @@ watch(() => paperCards.value.length, async () => {
 .attempt-chip.ok {
   background: rgba(34, 197, 94, 0.12);
   color: rgba(34, 197, 94, 0.95);
+}
+.paper-card-hint {
+  margin-left: 22px;
 }
 .attempt-chip .reason {
   opacity: 0.7;

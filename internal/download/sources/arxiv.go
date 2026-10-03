@@ -3,14 +3,18 @@ package sources
 import (
 	"context"
 	"fmt"
-	"net/url"
 
 	"github.com/qnqatop/papeer/internal/download"
 	"github.com/qnqatop/papeer/internal/httpclient"
 )
 
-// ArXiv resolves PDF by arXiv ID (either from paper metadata or by looking up DOI via S2).
-type ArXiv struct{}
+// ArXiv resolves a PDF by arXiv ID: from paper metadata, an arXiv DOI, the
+// paper's OpenAlex locations, or (last) Semantic Scholar externalIds.
+type ArXiv struct {
+	// Test hooks; empty = production endpoints.
+	s2BaseURL       string
+	openAlexBaseURL string
+}
 
 func NewArXiv() *ArXiv { return &ArXiv{} }
 
@@ -19,37 +23,41 @@ func (a *ArXiv) Name() string { return "arxiv" }
 func (a *ArXiv) Resolve(ctx context.Context, client *httpclient.Client, info download.PaperInfo) download.ResolveResult {
 	// If we already have an arXiv ID, use it directly.
 	if info.ArxivID != "" {
-		return download.ResolveResult{
-			PdfURL: fmt.Sprintf("https://arxiv.org/pdf/%s.pdf", info.ArxivID),
-		}
+		return arxivResult(info.ArxivID)
 	}
-
-	// Try to get arXiv ID from Semantic Scholar by DOI.
 	if info.DOI == "" {
 		return download.ResolveResult{Reason: "no arXiv ID or DOI"}
 	}
-
-	u := fmt.Sprintf("https://api.semanticscholar.org/graph/v1/paper/DOI:%s?fields=externalIds",
-		url.PathEscape(info.DOI))
-
-	// S2 returns externalIds with mixed value types — most keys are strings
-	// (ArXiv, DOI, MAG) but some (PubMed, CorpusId) come back as numbers.
-	// Decode into a generic map and coerce the value we need.
-	var resp struct {
-		ExternalIDs map[string]any `json:"externalIds"`
-	}
-	if err := client.DoJSONWithRetry(ctx, u, &resp, 3); err != nil {
-		return download.ResolveResult{Reason: fmt.Sprintf("S2 lookup failed: %v", err)}
+	// arXiv-minted DOIs embed the ID.
+	if id := arxivIDFromURL(info.DOI); id != "" {
+		return arxivResult(id)
 	}
 
-	arxivID := coerceString(resp.ExternalIDs["ArXiv"])
+	// OpenAlex first: it is not rate-limited like S2, and the work record is
+	// memoized for the openalex source later in the chain.
+	oaNote := "no arXiv location in OpenAlex"
+	work, err := fetchOpenAlexWork(ctx, client, info, a.openAlexBaseURL)
+	if err != nil {
+		oaNote = fmt.Sprintf("OpenAlex lookup failed: %v", err)
+	} else if id := arxivIDFromWork(work); id != "" {
+		return arxivResult(id)
+	}
+
+	// Fall back to S2 externalIds (memoized for s2_doi). Reasons are joined
+	// with "," — the engine and the frontend use ";" between sources.
+	paper, err := fetchS2PaperByDOI(ctx, client, info, a.s2BaseURL)
+	if err != nil {
+		return download.ResolveResult{Reason: oaNote + ", " + s2FailReason("S2 lookup failed", err)}
+	}
+	arxivID := coerceString(paper.ExternalIDs["ArXiv"])
 	if arxivID == "" {
-		return download.ResolveResult{Reason: "no arXiv ID in S2 externalIds"}
+		return download.ResolveResult{Reason: oaNote + ", no arXiv ID in S2 externalIds"}
 	}
+	return arxivResult(arxivID)
+}
 
-	return download.ResolveResult{
-		PdfURL: fmt.Sprintf("https://arxiv.org/pdf/%s.pdf", arxivID),
-	}
+func arxivResult(id string) download.ResolveResult {
+	return download.ResolveResult{PdfURL: fmt.Sprintf("https://arxiv.org/pdf/%s.pdf", id)}
 }
 
 // coerceString turns whatever S2 returned (string, number, nil) into a string.

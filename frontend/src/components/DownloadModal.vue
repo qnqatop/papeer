@@ -65,7 +65,7 @@
     </n-alert>
 
     <!-- Per-paper log (shared with the header BackgroundTasksIndicator popover). -->
-    <download-log />
+    <download-log @navigate="visible = false" />
 
     <!-- Confirm sub-dialog -->
     <n-modal v-model:show="showConfirm" preset="dialog" :title="t('download.confirmTitle')" :positive-text="t('download.startDownload')" :negative-text="t('common.cancel')" @positive-click="doDownload">

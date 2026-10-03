@@ -81,12 +81,28 @@ export function localizeBackendError(e: unknown, t: ReturnType<typeof useI18n>['
   return msg
 }
 
+// Semantic Scholar rate-limit markers in download failure reasons. The first
+// is the stable marker the Go download sources put in every S2 rate-limit
+// reason (S2RateLimitedMarker in internal/download/sources/lookup.go); the
+// second matches raw 429s logged before that marker existed.
+const S2_RATE_LIMIT_RE = /S2 rate limited|HTTP 429 from api\.semanticscholar\.org/
+
+// isS2RateLimited reports whether a download error says Semantic Scholar
+// refused us for rate limiting — the case an S2 API key fixes.
+export function isS2RateLimited(err: string | null | undefined): boolean {
+  return !!err && S2_RATE_LIMIT_RE.test(err)
+}
+
+// Settings route that opens the Search section, where the S2 API key lives.
+export const SEARCH_SETTINGS_ROUTE = { name: 'settings', query: { section: 'search' } } as const
+
 // downloadFailReason condenses a download engine failure (often the
 // aggregated "all sources exhausted: src: reason; ..." string) into one short
 // localized reason for compact lists. Full details stay in the download log.
 export function downloadFailReason(err: string, t: ReturnType<typeof useI18n>['t']): string {
   const known = localizeBackendError(err, t)
   if (known !== errorMessage(err)) return known
+  if (isS2RateLimited(err)) return t('download.failReason.s2RateLimited')
   const lower = err.toLowerCase()
   if (/captcha|cloudflare|akamai|\b403\b|forbidden/.test(lower)) return t('download.failReason.blocked')
   if (/\b429\b|rate limit|too many requests/.test(lower)) return t('download.failReason.rateLimited')

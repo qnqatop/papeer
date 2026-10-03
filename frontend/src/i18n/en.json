@@ -389,8 +389,11 @@
       "rateLimited": "Source rate limit — try later",
       "invalidPdf": "Got a page instead of a PDF",
       "noSource": "No open-access PDF found",
-      "other": "Download failed"
+      "other": "Download failed",
+      "s2RateLimited": "Semantic Scholar rate limit"
     },
+    "s2RateLimitHint": "Semantic Scholar is rate-limiting requests — add an API key in Settings → Search",
+    "openSearchSettings": "Open settings",
     "retryStarted": "Retrying download…",
     "autoDownloadFailed": "Status saved, but the PDF download did not start: {error}"
   },
